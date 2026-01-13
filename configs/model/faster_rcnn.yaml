@@ -1,0 +1,11 @@
+#model:
+name: faster_rcnn
+device: cuda
+input_channels: 1  # Grayscale
+transform:
+  input_size: [600, 800]
+  image_mean: [0.2618]
+  image_std: [0.1905]
+num_classes: 1  # Single class for person detection
+pretrained: false
+backbone: mobilenet_v3_large_fpn
