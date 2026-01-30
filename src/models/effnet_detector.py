@@ -1,12 +1,14 @@
 #designed as a classificer - might not be as helfpul as a detector since required to modify detection heads 
+import math
+
+import hydra
 import torch
 import torch.nn as nn
 import torchvision.models as models
-from torchvision.models.efficientnet import efficientnet_b0, EfficientNet_B0_Weights
-import math
-import hydra
 from omegaconf import DictConfig
+from torchvision.models.efficientnet import EfficientNet_B0_Weights, efficientnet_b0
 from torchvision.ops import box_iou
+
 
 class EfficientNetDetector(nn.Module):
     def __init__(self, cfg: DictConfig):
@@ -38,6 +40,7 @@ class EfficientNetDetector(nn.Module):
         )
     
     def forward(self, x, targets=None):
+        # Expects batched tensor [B, C, H, W]
         features = self.backbone(x)
         
         # Flatten features for the heads

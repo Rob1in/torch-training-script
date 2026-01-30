@@ -13,10 +13,8 @@ data:
 
 # Transform configuration
 # Note: Transforms are applied via GPUCollate in the dataloader
-# Add transforms below as needed - none are applied by default
 transform:
-  train: []
-    # Example transforms (uncomment to use):
+  train:
     - name: Resize
       params:
         size: ${model.transform.input_size}
@@ -50,23 +48,21 @@ transform:
     #     gamma: 1
     #     p: 0.5
 
-  val: []
-    # Example transforms (uncomment to use):
-    # - name: Resize
-    #   params:
-    #     size: ${model.transform.input_size}
-    # - name: Normalize
-    #   params: 
-    #     mean: [0.485, 0.456, 0.406]
-    #     std: [0.229, 0.224, 0.225]
+  val:
+    - name: Resize
+      params:
+        size: ${model.transform.input_size}
+    - name: Normalize
+      params: 
+        mean: [0.485, 0.456, 0.406]
+        std: [0.229, 0.224, 0.225]
         
-  test: []
-    # Example transforms (uncomment to use):
-    # - name: Resize
-    #   params:
-    #     size: ${model.transform.input_size}
-    # - name: Normalize
-    #   params:
-    #     mean: [0.485, 0.456, 0.406]
-    #     std: [0.229, 0.224, 0.225]
+  test:
+    - name: Resize
+      params:
+        size: ${model.transform.input_size}
+    - name: Normalize
+      params:
+        mean: [0.485, 0.456, 0.406]
+        std: [0.229, 0.224, 0.225]
 

@@ -63,6 +63,7 @@ class SimpleDetector(nn.Module):
         )
         
     def forward(self, x, targets=None):
+        # Expects batched tensor [B, C, H, W]
         features = self.backbone(x)
         
         # Flatten features for the heads

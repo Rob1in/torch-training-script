@@ -191,7 +191,7 @@ class GPUCollate:
             batch: List of (image, target) tuples
         
         Returns:
-            Batched images tensor and list of targets
+            Batched images tensor [B, C, H, W] and list of targets
         """
         images = []
         targets = []
@@ -216,7 +216,7 @@ class GPUCollate:
             images.append(image)
             targets.append(target)
         
-        # Stack images into batch
+        # Stack images into batch tensor (assumes all images have same size after transforms)
         images = torch.stack(images, dim=0)
         
         return images, targets
