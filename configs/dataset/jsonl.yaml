@@ -1,0 +1,69 @@
+name: jsonl
+
+# Dataset paths
+# Update these paths to point to your dataset location
+data:
+  train_jsonl: path/to/dataset.jsonl  # Path to training JSONL file
+  train_data_dir: path/to/data  # Directory containing training images
+  val_jsonl: path/to/dataset.jsonl  # Path to validation JSONL file (can be same file with split)
+  val_data_dir: path/to/data  # Directory containing validation images
+  test_jsonl: path/to/dataset.jsonl  # Path to test JSONL file
+  test_data_dir: path/to/data  # Directory containing test images
+  # test_annotations_coco: path/to/annotations.json  # Optional: Pre-converted COCO format ground truth
+
+# Transform configuration
+# Note: Transforms are applied via GPUCollate in the dataloader
+transform:
+  train:
+    - name: Resize
+      params:
+        size: ${model.transform.input_size}
+
+    - name: Normalize
+      params:
+        mean: [0.485, 0.456, 0.406]
+        std: [0.229, 0.224, 0.225]
+    # - name: RandomRotation
+    #   params: 
+    #     degrees: 10 
+    #     p: 0.3
+    #     expand: false
+    # - name: RandomHorizontalFlip
+    #   params:
+    #     p: 0.5 
+    # - name: RandomVerticalFlip
+    #   params:
+    #     p: 0.2 
+    # - name: ColorJitter
+    #   params:
+    #     brightness: 0.2 
+    #     contrast: 0.2
+    #     p: 0.5
+    # - name: RandomGaussianNoise
+    #   params:
+    #     mean: 0.0
+    #     std: 0.1
+    #     p: 0.5
+    # - name: RandomGamma
+    #   params: 
+    #     gamma: 1
+    #     p: 0.5
+
+  val:
+    - name: Resize
+      params:
+        size: ${model.transform.input_size}
+    - name: Normalize
+      params: 
+        mean: [0.485, 0.456, 0.406]
+        std: [0.229, 0.224, 0.225]
+        
+  test:
+    - name: Resize
+      params:
+        size: ${model.transform.input_size}
+    - name: Normalize
+      params:
+         mean: [0.485, 0.456, 0.406]
+         std: [0.229, 0.224, 0.225]
+

@@ -1,0 +1,29 @@
+#model:
+  name: ssdlite
+  device: cuda
+  num_classes: 1  # Will be auto-updated based on dataset (number of classes discovered)
+  pretrained: true
+  transform:
+    input_size: [320, 320]
+    image_mean: [0.485, 0.456, 0.406]  # ImageNet RGB stats
+    image_std: [0.229, 0.224, 0.225] 
+  backbone: mobilenet_v3_large
+  strides: [16, 32, 64, 128, 256, 512]  # Flattened list
+  augmentation:
+    enabled: true
+    horizontal_flip: true
+    vertical_flip: false
+    rotation: 15
+    brightness: 0.2
+    contrast: 0.2
+    saturation: 0.2
+    hue: 0.1
+    scale: [0.8, 1.2]
+    translate: [0.1, 0.1]
+  loss:
+    cls_loss_weight: 0.5
+    box_loss_weight: ${eval:1 - model.loss.cls_loss_weight}
+    smooth_l1_beta: 0.11
+    negative_mining_ratio: 3
+    negative_mining_threshold: 0.5 
+

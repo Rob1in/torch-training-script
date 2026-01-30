@@ -1,0 +1,54 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+
+# Virtual Environment
+.venv/
+venv/
+ENV/
+env/
+
+# Training outputs
+outputs/
+multirun/
+checkpoints/
+*.pth
+*.pt
+*.ckpt
+
+# TensorBoard
+events.out.tfevents.*
+
+# Hydra
+.hydra/
+
+# Dataset files (exclude from git, too large)
+# Note: Add specific dataset folders to .git/info/exclude for local-only ignores
+**/data/*.jpeg
+**/data/*.jpg
+**/data/*.png
+**/data/*.json
+**/metadata/*.json
+*.jsonl
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log

@@ -1,0 +1,29 @@
+# Placeholder for SSDLite optimization results
+#
+# This file should contain the best hyperparameters found by Optuna sweeps.
+# 
+# To generate optimization results:
+#   1. Install sweep dependencies: pip install -e ".[sweep]"
+#   2. Run hyperparameter optimization: python src/train.py --config-name=sweep --multirun
+#   3. Copy the best parameters from the Optuna output to this file
+#
+# Expected format:
+# name: optuna
+# best_params:
+#   learning_rate: <float>
+#   weight_decay: <float>
+#   early_stopping_patience: <int>
+#   degrees: <float>
+#   p_h: <float>
+#   p_v: <float>
+# best_value: <float>
+
+name: optuna
+best_params:
+  learning_rate: 0.001
+  weight_decay: 1e-5
+  early_stopping_patience: 15
+  degrees: 10
+  p_h: 0.5
+  p_v: 0.5
+best_value: null

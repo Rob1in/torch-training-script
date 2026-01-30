@@ -1,0 +1,11 @@
+#model:
+name: effnet
+device: cuda
+num_classes: 1  # Will be auto-updated based on dataset (number of classes discovered)
+pretrained: true
+transform:
+  input_size: [224, 224]
+loss:
+  cls_loss_weight: 0.5 
+  box_loss_weight: ${eval:1 - model.loss.cls_loss_weight}
+

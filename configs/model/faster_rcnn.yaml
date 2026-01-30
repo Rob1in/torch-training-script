@@ -1,11 +1,10 @@
 #model:
 name: faster_rcnn
 device: cuda
-input_channels: 1  # Grayscale
 transform:
-  input_size: [600, 800]
-  image_mean: [0.2618]
-  image_std: [0.1905]
-num_classes: 1  # Single class for person detection
+  input_size: [240, 320]
+  image_mean: [0.485, 0.456, 0.406]  # ImageNet RGB stats
+  image_std: [0.229, 0.224, 0.225]
+num_classes: 1  # Will be auto-updated based on dataset (number of classes discovered)
 pretrained: false
 backbone: mobilenet_v3_large_fpn

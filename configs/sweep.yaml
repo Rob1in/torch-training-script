@@ -1,0 +1,68 @@
+# Configuration for hyperparameter optimization with Optuna
+# Usage: python src/train.py --config-name=sweep --multirun
+#
+# Requirements: pip install -e ".[sweep]"
+
+# Hydra Optuna Sweeper Configuration
+hydra:
+  sweeper:
+    _target_: hydra_plugins.hydra_optuna_sweeper.optuna_sweeper.OptunaSweeper
+    sampler:
+      _target_: optuna.samplers.TPESampler
+      seed: 42
+    direction: minimize
+    study_name: object_detection_sweep
+    storage: null  # Use in-memory storage (or specify sqlite:///optuna.db for persistence)
+    n_trials: 30
+    n_jobs: 1
+    params:
+      # Model architecture (optional: sweep over models)
+      # model: choice(faster_rcnn, ssdlite, effnet)
+      
+      # Hyperparameters to optimize (works for all architectures)
+      training.learning_rate: tag(log, interval(1e-5, 5e-3))
+      training.weight_decay: tag(log, interval(1e-6, 1e-3))
+      training.loss.cls_loss_weight: tag(uniform, interval(0.2, 0.8))
+
+defaults:
+  - model: faster_rcnn  # Choose: faster_rcnn, ssdlite, effnet
+  - dataset: jsonl
+  - override hydra/sweeper: optuna
+  - _self_
+
+# Experiment settings
+experiment:
+  name: sweep_${now:%Y-%m-%d}_${now:%H-%M-%S}
+  seed: 42
+  device: cuda
+
+# Classes configuration
+# List of annotation labels to train/evaluate on.
+# Only annotations with labels in this list will be included.
+# If None or empty, all annotation labels found in the JSONL file will be used.
+classes:
+  - triangle
+  
+# Training configuration (starting values, will be overridden by Optuna)
+training:
+  batch_size: 32
+  num_epochs: 25  # Consider reducing for faster sweeps (e.g., 10-15 epochs)
+  learning_rate: 0.001  # Will be overridden by Optuna
+  weight_decay: 1e-5    # Will be overridden by Optuna
+  early_stopping_patience: 10  # Shorter patience for sweeps
+  checkpoint_dir: checkpoints
+  num_workers: 1
+  pin_memory: false
+  loss:
+    cls_loss_weight: 0.5     # Will be overridden by Optuna
+    box_loss_weight: 0.5
+    # RPN-specific weights (only used by faster_rcnn, ignored by other models)
+    rpn_loss_weight: 0.5
+    rpn_box_reg_loss_weight: 0.5
+
+# Logging
+logging:
+  save_dir: ${hydra:runtime.output_dir}
+
+evaluation:
+  confidence_threshold: 0.1

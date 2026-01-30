@@ -1,0 +1,56 @@
+# Configuration for regular training (uses pre-computed optimization results)
+# Usage: python src/train.py --config-name=train
+
+defaults:
+  - model: faster_rcnn  # Choose: faster_rcnn, ssdlite, effnet, custom_detector
+  - dataset: jsonl
+  - optimization_results: faster_rcnn  # Match the model you chose above
+  - _self_
+
+# Experiment settings
+experiment:
+  name: run_${now:%Y-%m-%d}_${now:%H-%M-%S}
+  seed: 42
+  device: cuda
+
+# Classes configuration
+# List of annotation labels to train/evaluate on.
+# Only annotations with labels in this list will be included.
+# If None or empty, all annotation labels found in the JSONL file will be used.
+# 
+# Example for multiclass detection (training on specific classes):
+# classes:
+#   - triangle
+#   - person
+#   - car
+#
+# Example for single class (only train on 'person' annotations):
+# classes:
+#   - person
+#
+# If None, classes will be auto-discovered from all annotation labels in the dataset
+classes:
+  - triangle
+  
+# Training configuration using pre-computed optimization results
+training:
+  batch_size: 32
+  num_epochs: 25
+  learning_rate: ${optimization_results.best_params.learning_rate} 
+  weight_decay: ${optimization_results.best_params.weight_decay} 
+  early_stopping_patience: 15 
+  checkpoint_dir: checkpoints
+  num_workers: 1
+  pin_memory: false
+  loss:
+    cls_loss_weight: ${optimization_results.best_params.cls_loss_weight}
+    box_loss_weight: ${eval:1 - ${optimization_results.best_params.cls_loss_weight}}
+    rpn_loss_weight: ${optimization_results.best_params.rpn_loss_weight}
+    rpn_box_reg_loss_weight: ${eval:1 - ${optimization_results.best_params.rpn_loss_weight}}
+
+# Logging
+logging:
+  save_dir: ${hydra:runtime.output_dir}
+
+evaluation:
+  confidence_threshold: 0.1

@@ -1,0 +1,25 @@
+# Placeholder for Faster R-CNN optimization results
+#
+# This file should contain the best hyperparameters found by Optuna sweeps.
+# 
+# To generate optimization results:
+#   1. Install sweep dependencies: pip install -e ".[sweep]"
+#   2. Run hyperparameter optimization: python src/train.py --config-name=sweep --multirun
+#   3. Copy the best parameters from the Optuna output to this file
+#
+# Expected format:
+# name: optuna
+# best_params:
+#   learning_rate: <float>
+#   weight_decay: <float>
+#   cls_loss_weight: <float>
+#   rpn_loss_weight: <float>
+# best_value: <float>
+
+name: optuna
+best_params:
+  learning_rate: 0.001
+  weight_decay: 1e-5
+  cls_loss_weight: 0.5
+  rpn_loss_weight: 0.5
+best_value: null

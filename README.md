@@ -1,1 +1,478 @@
-# torch-training-script
+# PyTorch Object Detection Training Script
+
+A PyTorch-based object detection training pipeline supporting multiple model architectures with multiclass detection capabilities. Designed for RGB images using JSONL-formatted datasets with normalized bounding box annotations.
+
+## Quick Start
+
+```bash
+# Install dependencies
+pip install -r requirements.txt
+
+# Run training (regular mode)
+python src/train.py --config-name=train
+
+# Run training with custom parameters
+python src/train.py --config-name=train training.batch_size=16 training.num_epochs=50
+
+# Run hyperparameter optimization (requires: pip install -e ".[sweep]")
+python src/train.py --config-name=sweep --multirun
+
+# Evaluate a trained model
+python src/eval.py
+```
+
+## Features
+
+- **Multiclass Detection**: Train on multiple object classes simultaneously
+- **RGB Images Only**: Optimized for 3-channel RGB input (no grayscale support)
+- **JSONL Dataset Format**: Uses JSONL files with normalized bounding box annotations
+- **Multiple Model Architectures**: Supports Faster R-CNN, SSD-Lite, EfficientNet, and Simple Detector
+- **Automatic Class Discovery**: Can auto-discover classes from dataset or use explicit configuration
+- **COCO Evaluation**: Automatic conversion from JSONL to COCO format for evaluation metrics
+- **Hydra Configuration**: Flexible configuration management with Hydra
+
+## Requirements
+
+- **Python** >= 3.10
+- See [Installation](#installation) section for package dependencies
+
+## Installation
+
+1. Clone the repository:
+```bash
+git clone <repository-url>
+cd torch-training-script
+```
+
+2. Install dependencies:
+```bash
+pip install -r requirements.txt
+```
+
+## Dataset Format
+
+The training pipeline expects datasets in JSONL format where each line is a JSON object containing:
+
+```json
+{
+  "image_path": "path/to/image.jpg",
+  "bounding_box_annotations": [
+    {
+      "annotation_label": "person",
+      "x_min_normalized": 0.1,
+      "y_min_normalized": 0.2,
+      "x_max_normalized": 0.5,
+      "y_max_normalized": 0.8
+    },
+    {
+      "annotation_label": "car",
+      "x_min_normalized": 0.6,
+      "y_min_normalized": 0.3,
+      "x_max_normalized": 0.9,
+      "y_max_normalized": 0.7
+    }
+  ]
+}
+```
+
+**Key points:**
+- `image_path`: Path to the image file (can be absolute or relative to `data_dir`)
+- `annotation_label`: The class name for this bounding box
+- Coordinates are normalized (0.0 to 1.0) relative to image dimensions
+- Images must be RGB format (3 channels)
+
+## Configuration
+
+### Classes Configuration
+
+The `classes` field in `configs/config.yaml` determines which annotation labels to train on:
+
+**Option 1: Auto-discover all classes** (default)
+```yaml
+classes: null  # Uses all annotation labels found in the dataset
+```
+
+**Option 2: Train on specific classes**
+```yaml
+classes:
+  - triangle
+  - person
+  - car
+```
+
+**Option 3: Single class detection**
+```yaml
+classes:
+  - person
+```
+
+The `classes` configuration:
+- Is defined at the top level in `configs/config.yaml` (overrides any values in other configs)
+- Determines `model.num_classes` automatically before model creation
+- Filters annotations in all datasets (train, val, test)
+- Creates consistent label-to-ID mappings across the pipeline
+
+### Dataset Paths
+
+Configure dataset paths in `configs/dataset/jsonl.yaml`:
+
+```yaml
+data:
+  train_jsonl: dataset.jsonl
+  train_data_dir: data
+  val_jsonl: dataset.jsonl
+  val_data_dir: data
+  test_jsonl: dataset.jsonl
+  test_data_dir: data
+```
+
+### Model Selection
+
+Select a model in `configs/config.yaml`:
+
+```yaml
+defaults:
+  - model: faster_rcnn  # Options: faster_rcnn, ssdlite, effnet, custom_detector
+  - dataset: jsonl
+  - _self_
+```
+
+## Supported Models
+
+### Faster R-CNN
+- **Config**: `configs/model/faster_rcnn.yaml`
+- **Backbone**: MobileNetV3-Large with FPN
+- **Input Size**: Configurable (default: 600x800)
+- **Best for**: High accuracy, slower inference
+
+### SSD-Lite
+- **Config**: `configs/model/ssdlite.yaml`
+- **Backbone**: MobileNetV3-Large
+- **Input Size**: 320x320
+- **Best for**: Fast inference, mobile deployment
+
+### EfficientNet
+- **Config**: `configs/model/effnet.yaml`
+- **Backbone**: EfficientNet-B0
+- **Input Size**: 224x224
+- **Best for**: Balanced accuracy and speed
+
+### Simple Detector
+- **Config**: `configs/model/custom_detector.yaml`
+- **Architecture**: Simple CNN backbone (3 conv layers + detection heads)
+- **Input Size**: Configurable (default: 640x512)
+- **Best for**: Baseline experiments and learning
+
+## Training
+
+The training pipeline supports two modes: **regular training** and **hyperparameter optimization**.
+
+### Mode 1: Regular Training (Recommended)
+
+Uses pre-computed hyperparameters from previous optimization runs.
+
+**Basic usage:**
+```bash
+python src/train.py --config-name=train
+```
+
+**With custom parameters:**
+```bash
+python src/train.py --config-name=train training.batch_size=16 training.num_epochs=50
+```
+
+**With specific classes:**
+Edit `configs/train.yaml` to set your classes:
+```yaml
+classes:
+  - person
+  - car
+```
+
+Then run:
+```bash
+python src/train.py --config-name=train
+```
+
+### Mode 2: Hyperparameter Optimization (Advanced)
+
+Run Optuna sweeps to find optimal hyperparameters for your dataset.
+
+**Requirements:**
+```bash
+pip install -e ".[sweep]"
+```
+
+**Run a sweep:**
+```bash
+python src/train.py --config-name=sweep --multirun
+```
+
+This will:
+- Run 30 trials (configurable in `configs/sweep.yaml`)
+- Optimize learning rate, weight decay, and loss weights
+- Save results to Hydra's multirun output directory
+- Print the best hyperparameters at the end
+
+**Update optimization results:**
+After a successful sweep, copy the best parameters to `configs/optimization_results/` for future use.
+
+### Understanding Output Directories
+
+The training pipeline creates two different output directories depending on the run mode:
+
+#### 📁 `outputs/` - Single Training Runs
+
+Used for **regular training** (`--config-name=train`):
+
+```
+outputs/
+└── YYYY-MM-DD/
+    └── HH-MM-SS/                    # Timestamp of run
+        ├── .hydra/
+        │   ├── config.yaml          # Full config used for this run
+        │   ├── hydra.yaml           # Hydra settings
+        │   └── overrides.yaml       # CLI overrides you provided
+        ├── best_model.pth           # Saved checkpoint (best validation loss)
+        ├── tensorboard/             # TensorBoard logs
+        │   └── events.out.tfevents.*
+        └── train.log                # Training logs (loss, metrics, etc.)
+```
+
+**What you'll find:**
+- **`best_model.pth`**: Your trained model checkpoint (use this for evaluation)
+- **`.hydra/config.yaml`**: Exact configuration used (for reproducibility)
+- **`train.log`**: All training output (epochs, losses, validation metrics)
+- **`tensorboard/`**: Training curves (visualize with `tensorboard --logdir outputs/`)
+
+**Example:**
+```bash
+# Train once
+python src/train.py --config-name=train
+
+# Output saved to: outputs/2026-01-30/14-25-30/
+```
+
+---
+
+#### 📁 `multirun/` - Hyperparameter Sweeps (Optuna)
+
+Used for **hyperparameter optimization** (`--config-name=sweep --multirun`):
+
+```
+multirun/
+└── YYYY-MM-DD/
+    └── HH-MM-SS/                    # Timestamp of sweep start
+        ├── 0/                       # Trial 0 (first hyperparameter combination)
+        │   ├── .hydra/
+        │   │   ├── config.yaml      # Config for this trial
+        │   │   └── overrides.yaml   # Hyperparameters Optuna chose
+        │   ├── tensorboard/
+        │   └── train.log
+        ├── 1/                       # Trial 1 (second combination)
+        │   ├── .hydra/
+        │   ├── tensorboard/
+        │   └── train.log
+        ├── 2/                       # Trial 2 (third combination)
+        │   └── ...
+        └── optimization_results.yaml # Best hyperparameters found
+```
+
+**What you'll find:**
+- **Numbered directories (0, 1, 2, ...)**: Each trial's results
+- **`.hydra/overrides.yaml`**: The hyperparameters Optuna tested for that trial
+  ```yaml
+  - training.learning_rate=0.0001025
+  - training.weight_decay=0.0007114
+  - training.loss.cls_loss_weight=0.6392
+  ```
+- **`optimization_results.yaml`**: Summary with best hyperparameters and their validation loss
+- **No `best_model.pth`**: Sweeps don't save models by default (focused on finding best hyperparameters)
+
+**Example:**
+```bash
+# Run sweep with 30 trials
+python src/train.py --config-name=sweep --multirun
+
+# Output saved to: multirun/2026-01-30/14-30-15/
+#   ├── 0/  (trial 0 with learning_rate=0.001, weight_decay=1e-5)
+#   ├── 1/  (trial 1 with learning_rate=0.0002, weight_decay=5e-6)
+#   └── ... (28 more trials)
+```
+
+---
+
+#### 🔍 Key Differences
+
+| Feature | `outputs/` (Single Run) | `multirun/` (Sweep) |
+|---------|------------------------|---------------------|
+| **Created by** | `--config-name=train` | `--config-name=sweep --multirun` |
+| **Purpose** | Train one model | Find best hyperparameters |
+| **Structure** | One directory per run | One directory per trial |
+| **Checkpoint** | ✅ `best_model.pth` saved | ❌ No checkpoints (hyperparameter search) |
+| **Use case** | Production training | Hyperparameter tuning |
+| **Training time** | Full epochs (e.g., 25) | Can use fewer epochs (e.g., 10-15) |
+
+---
+
+#### 💡 Typical Workflow
+
+1. **First**: Run hyperparameter sweep to find best parameters
+   ```bash
+   python src/train.py --config-name=sweep --multirun
+   # Check multirun/YYYY-MM-DD/HH-MM-SS/optimization_results.yaml
+   ```
+
+2. **Then**: Copy best parameters to `configs/optimization_results/`
+
+3. **Finally**: Train production model with best hyperparameters
+   ```bash
+   python src/train.py --config-name=train
+   # Get best_model.pth from outputs/YYYY-MM-DD/HH-MM-SS/
+   ```
+
+## Evaluation
+
+### Basic Evaluation
+
+```bash
+python src/eval.py
+```
+
+**Note**: Update the checkpoint path in `src/eval.py` (line ~229) to point to your trained model checkpoint.
+
+### Evaluation Outputs
+
+Evaluation generates:
+- COCO format predictions JSON file
+- COCO evaluation metrics (AP, AP50, AP75, etc.)
+- Visualization images with predicted bounding boxes
+- Automatic JSONL to COCO conversion for ground truth (if needed)
+
+### COCO Metrics
+
+The evaluation script automatically:
+1. Converts JSONL ground truth to COCO format (if not provided)
+2. Evaluates predictions using COCO metrics
+3. Reports AP (Average Precision) at different IoU thresholds
+
+## Project Structure
+
+```
+torch-training-script/
+├── configs/
+│   ├── config.yaml              # Legacy config (use train.yaml or sweep.yaml instead)
+│   ├── train.yaml               # Config for regular training
+│   ├── sweep.yaml               # Config for hyperparameter optimization
+│   ├── dataset/
+│   │   └── jsonl.yaml           # Dataset paths and transforms
+│   ├── model/
+│   │   ├── faster_rcnn.yaml
+│   │   ├── ssdlite.yaml
+│   │   ├── effnet.yaml
+│   │   └── custom_detector.yaml
+│   └── optimization_results/    # Pre-computed hyperparameters (may be outdated)
+│       ├── faster_rcnn.yaml
+│       └── ssdlite.yaml
+├── src/
+│   ├── train.py                 # Training script
+│   ├── eval.py                  # Evaluation script
+│   ├── datasets/
+│   │   └── viam_dataset.py      # JSONL dataset loader
+│   ├── models/
+│   │   ├── faster_rcnn_detector.py
+│   │   ├── ssdlite_detector.py
+│   │   ├── effnet_detector.py
+│   │   └── custom_detector.py
+│   └── utils/
+│       ├── transforms.py         # Data augmentation transforms
+│       └── coco_converter.py     # JSONL to COCO converter
+├── requirements.txt
+└── pyproject.toml
+```
+
+## Key Implementation Details
+
+### Multiclass Detection
+
+- Classes are discovered from `annotation_label` fields in JSONL files
+- Label-to-ID mapping is created automatically (1-based, 0 is background)
+- Model `num_classes` is set automatically based on the number of classes
+- All datasets (train/val/test) use the same class configuration
+
+### RGB-Only Support
+
+- All models assume 3-channel RGB input
+- No grayscale conversion or single-channel support
+- ImageNet normalization stats used by default
+
+### Class Configuration Flow
+
+1. `classes` is read from top-level `configs/config.yaml`
+2. If `null`, classes are auto-discovered from the training dataset
+3. `model.num_classes` is set to `len(classes)` before model creation
+4. All datasets are created with the same `classes` list
+5. COCO converter uses the same `classes` for evaluation
+
+### Hydra Configuration Precedence
+
+With `_self_` last in `defaults`, values in `configs/config.yaml` override values from other configs:
+- `model/*.yaml` loaded first
+- `dataset/jsonl.yaml` merged second
+- `config.yaml` (`_self_`) merged last (highest precedence)
+
+## Installation
+
+### Option 1: Using requirements.txt (all dependencies)
+
+```bash
+pip install -r requirements.txt
+```
+
+### Option 2: Using pyproject.toml (selective dependencies)
+
+Install only what you need:
+
+```bash
+# Core dependencies (minimum required)
+pip install -e ".[core,config]"
+
+# For training
+pip install -e ".[train]"
+
+# For evaluation
+pip install -e ".[eval]"
+
+# Everything (recommended)
+pip install -e ".[all]"
+
+# With development tools
+pip install -e ".[all,dev]"
+```
+
+### Dependency Groups
+
+- **core**: PyTorch, torchvision, numpy, pillow
+- **config**: Hydra and OmegaConf for configuration management
+- **train**: Training-specific dependencies (tqdm, torchinfo)
+- **eval**: Evaluation-specific dependencies (pycocotools, matplotlib)
+- **sweep**: Hyperparameter optimization (optuna, hydra-optuna-sweeper)
+- **dev**: Development tools (pytest, black, flake8, mypy)
+- **all**: All dependencies combined (excluding sweep and dev)
+
+## Requirements
+
+Key dependencies:
+- **PyTorch** >= 2.0.0 - Deep learning framework
+- **torchvision** >= 0.15.0 - Computer vision models and transforms
+- **Hydra** >= 1.3.0 - Configuration management
+- **pycocotools** >= 2.0.0 - COCO evaluation metrics
+- **Pillow** >= 9.0.0 - Image processing
+- **numpy** >= 1.21.0 - Numerical operations
+- **matplotlib** >= 3.5.0 - Visualization (for evaluation)
+- **tqdm** >= 4.64.0 - Progress bars
+- **torchinfo** >= 1.8.0 - Model summary
+- **tensorboard** >= 2.11.0 - Training visualization
+- **optuna** >= 3.0.0 - Hyperparameter optimization (optional, install with `[sweep]`)
+- **hydra-optuna-sweeper** >= 1.2.0 - Hydra integration for Optuna (optional, install with `[sweep]`)
+
