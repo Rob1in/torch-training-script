@@ -40,7 +40,7 @@ eval = [
 
 # Hyperparameter optimization
 sweep = [
-    "optuna>=3.0.0",
+    "optuna>=2.10.0,<3.0.0",  # Version constraint from hydra-optuna-sweeper
     "hydra-optuna-sweeper>=1.2.0",
 ]
 
