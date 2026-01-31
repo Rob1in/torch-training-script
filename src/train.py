@@ -8,7 +8,6 @@ import torch
 import torch.multiprocessing as mp
 import torch.nn as nn
 from omegaconf import DictConfig, OmegaConf
-from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from torchinfo import summary
@@ -19,12 +18,15 @@ from models.custom_detector import SimpleDetector
 from models.effnet_detector import EfficientNetDetector
 from models.faster_rcnn_detector import FasterRCNNDetector
 from models.ssdlite_detector import SSDLiteDetector
+from utils.freeze import configure_model_for_transfer_learning
+from utils.model_ema import ModelEMA
+from utils.seed import set_seed
 from utils.transforms import GPUCollate, build_transforms
 
 log = logging.getLogger(__name__)
 
 OmegaConf.register_new_resolver("eval", eval)
-def train_model(model, train_loader, val_loader, optimizer, scheduler, device, cfg: DictConfig):
+def train_model(model, train_loader, val_loader, optimizer, scheduler, device, cfg: DictConfig, model_ema=None):
     # Create tensorboard writer using Hydra's output directory
     writer = SummaryWriter(Path(cfg.logging.save_dir) / 'tensorboard')  # Use Hydra's output directory
     
@@ -40,19 +42,28 @@ def train_model(model, train_loader, val_loader, optimizer, scheduler, device, c
                         'loss_box_reg': 0.0,
                         'loss_objectness': 0.0,
                         'loss_rpn_box_reg': 0.0}
+        
+        # PyTorch reference: Warmup only in epoch 0
+        warmup_scheduler = None
+        if epoch == 0:
+            warmup_factor = cfg.training.get('warmup_factor', 0.001)  # 1/1000
+            warmup_iters = min(cfg.training.get('warmup_iters', 1000), len(train_loader) - 1)
+            
+            warmup_scheduler = torch.optim.lr_scheduler.LinearLR(
+                optimizer,
+                start_factor=warmup_factor,
+                total_iters=warmup_iters
+            )
+            log.info(f"Epoch 0: Applying warmup for {warmup_iters} iterations (start_factor={warmup_factor})")
                         
         train_pbar = tqdm(train_loader, desc=f'Epoch {epoch+1}/{cfg.training.num_epochs} [Train]')
         for batch_idx, (data, targets) in enumerate(train_pbar):
             optimizer.zero_grad()
 
-            if cfg.model.name in ["faster_rcnn", "ssdlite"]: #for torchvision models: they return a Dict[Tensor] which contains classification and regression losses
+            if cfg.model.name in ["faster_rcnn", "ssdlite"]:
+                # Torchvision models return loss dict - use default weights (sum all losses)
                 loss_dict = model(data, targets)
-                loss = (
-                loss_dict['loss_classifier'] * cfg.training.loss.cls_loss_weight +
-                loss_dict['loss_box_reg'] * cfg.training.loss.box_loss_weight +
-                loss_dict['loss_objectness'] * cfg.training.loss.rpn_loss_weight +
-                loss_dict['loss_rpn_box_reg'] * cfg.training.loss.rpn_box_reg_loss_weight
-                ) #sum of classification and regression losses according to weights 
+                loss = sum(loss for loss in loss_dict.values()) 
             
             elif cfg.model.name in ["effnet", "custom_detector"]: # For custom models that don't compute loss internally
                 outputs = model(data, targets)
@@ -82,9 +93,22 @@ def train_model(model, train_loader, val_loader, optimizer, scheduler, device, c
                 raise ValueError(f"Unknown model name: {cfg.model.name}")
 
             loss.backward()
-            grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0) # gradient clipping to avoid exploding gradients
+            
+            # Gradient clipping
+            if cfg.training.gradient_clip > 0:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=cfg.training.gradient_clip)
+            
             optimizer.step()
-            train_loss += loss.item() #maintain running loss total 
+            
+            # Update EMA after optimizer step
+            if model_ema is not None:
+                model_ema.update(model)
+            
+            # PyTorch reference: Warmup scheduler only in epoch 0, stepped per-iteration
+            if warmup_scheduler is not None:
+                warmup_scheduler.step()
+            
+            train_loss += loss.item()
 
             # Log individual losses per batch to tensorboard
             for loss_name, loss_value in loss_dict.items():
@@ -93,19 +117,26 @@ def train_model(model, train_loader, val_loader, optimizer, scheduler, device, c
                                 epoch * len(train_loader) + batch_idx)
 
                 # Update progress bar
-            train_pbar.set_postfix({'train loss this batch': loss.item()})
+            train_pbar.set_postfix({
+                'loss': f'{loss.item():.4f}',
+                'lr': f'{optimizer.param_groups[0]["lr"]:.6f}'
+            })
 
         avg_losses = {k: v/len(train_loader) for k, v in train_losses.items()}
-        avg_train_loss = sum(avg_losses.values())
         avg_train_loss = train_loss / len(train_loader) 
-        # Run validation for all model types
-        avg_val_loss = evaluate_validation(model, val_loader, device, epoch, cfg)
 
-        scheduler.step(avg_val_loss)
+        # Run validation for all model types
+        # Use EMA model if available (typically performs better)
+        eval_model = model_ema.module if model_ema is not None else model
+        avg_val_loss = evaluate_validation(eval_model, val_loader, device, epoch, cfg)
 
         # Log epoch metrics to tensorboard
         writer.add_scalar('Loss/train', avg_train_loss, epoch)
         writer.add_scalar('Loss/val', avg_val_loss, epoch)
+        
+        # Log individual loss components
+        for loss_name, loss_value in avg_losses.items():
+            writer.add_scalar(f'EpochLoss/{loss_name}', loss_value, epoch)
         
         # Log learning rate
         writer.add_scalar('Learning_rate', optimizer.param_groups[0]['lr'], epoch)
@@ -114,17 +145,29 @@ def train_model(model, train_loader, val_loader, optimizer, scheduler, device, c
         log.info(f'Epoch {epoch+1}/{cfg.training.num_epochs}: '
                 f'Avg Train Loss: {avg_train_loss:.4f}, '
                 f'Avg Val Loss: {avg_val_loss:.4f}')
+        
+        # PyTorch reference: Step scheduler per-epoch (after validation)
+        scheduler.step()
 
         # Save checkpoint
         if avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
             checkpoint_path = Path(cfg.logging.save_dir) / 'best_model.pth'
-            torch.save({
+            
+            checkpoint_dict = {
                 'epoch': epoch + 1,
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
+                'scheduler_state_dict': scheduler.state_dict(),
                 'val_loss': avg_val_loss,
-            }, checkpoint_path)
+            }
+            
+            # Save EMA state if available
+            if model_ema is not None:
+                checkpoint_dict['model_ema_state_dict'] = model_ema.state_dict()
+            
+            torch.save(checkpoint_dict, checkpoint_path)
+            log.info(f'Saved best model checkpoint to {checkpoint_path}')
             patience_counter = 0
         else:
              patience_counter += 1
@@ -196,7 +239,9 @@ def main(cfg: DictConfig):
     log.info(f"check device: {torch.cuda.is_available()}")
     log.info(f"config: \n{OmegaConf.to_yaml(cfg)}")
     
-    torch.manual_seed(cfg.experiment.seed)
+    # Set random seed for reproducibility
+    set_seed(cfg.experiment.seed)
+    log.info(f"Set random seed to {cfg.experiment.seed} for reproducibility")
     # Device selection with fallback: CUDA -> MPS -> CPU
     requested_device = cfg.model.device
     if requested_device == "cuda":
@@ -259,6 +304,39 @@ def main(cfg: DictConfig):
     else:
         raise ValueError(f"Unknown model type: {cfg.model.name}")
    
+    # Configure transfer learning strategy (freeze/unfreeze layers)
+    # Only applies when using pretrained weights
+    if cfg.model.get('pretrained', False):
+        freeze_config = {
+            'freeze_backbone': cfg.training.get('freeze_backbone', False),
+            'freeze_fpn': cfg.training.get('freeze_fpn', False),
+            'freeze_rpn': cfg.training.get('freeze_rpn', False),
+            'freeze_all': cfg.training.get('freeze_all', False),
+        }
+        
+        if any(freeze_config.values()):
+            log.info("=" * 60)
+            log.info("TRANSFER LEARNING: Configuring layer freezing")
+            log.info("=" * 60)
+            configure_model_for_transfer_learning(
+                model, 
+                cfg.model.name, 
+                freeze_config
+            )
+            log.info("=" * 60)
+        else:
+            log.info("Transfer learning: Full fine-tuning (all layers trainable)")
+    else:
+        log.info("Training from scratch (no pretrained weights)")
+    
+    # Create Exponential Moving Average (EMA) of model weights
+    # EMA provides more stable models and typically improves accuracy by 0.5-1.0 mAP
+    model_ema = None
+    if cfg.training.get('use_ema', True):  # Enable by default
+        ema_decay = cfg.training.get('ema_decay', 0.9998)
+        model_ema = ModelEMA(model, decay=ema_decay, device=device)
+        log.info(f"Created Model EMA with decay={ema_decay}")
+
     train_transform = build_transforms(cfg, is_train=True, test=False) #investigate whether each image can be transformed differently
     val_transform = build_transforms(cfg, is_train=False, test=False)    
 
@@ -299,21 +377,55 @@ def main(cfg: DictConfig):
         collate_fn=GPUCollate(device, val_transform)
     )
     
-    # Create optimizer
-  
-    optimizer = torch.optim.Adam(
-            model.parameters(),
+    # Create optimizer with normalization layer separation (PyTorch reference approach)
+    # PyTorch separates normalization layers (BatchNorm, LayerNorm) from other parameters
+    # for differential weight decay, NOT backbone vs other layers
+    norm_weight_decay = cfg.training.get('norm_weight_decay', None)
+    
+    if norm_weight_decay is None:
+        # Simple case: all parameters get same weight decay
+        parameters = [p for p in model.parameters() if p.requires_grad]
+        log.info("Optimizer: Single parameter group (all trainable params)")
+        log.info(f"  - {sum(p.numel() for p in parameters):,} total trainable params")
+    else:
+        # Split normalization layers from other parameters (PyTorch reference approach)
+        from torchvision.ops._utils import split_normalization_params
+        param_groups = split_normalization_params(model)
+        wd_groups = [norm_weight_decay, cfg.training.weight_decay]
+        parameters = [{"params": p, "weight_decay": w} for p, w in zip(param_groups, wd_groups) if p]
+        
+        log.info("Optimizer: Separate normalization layer weight decay")
+        log.info(f"  - Norm layers: {sum(p.numel() for p in param_groups[0]):,} params, weight_decay={norm_weight_decay}")
+        log.info(f"  - Other layers: {sum(p.numel() for p in param_groups[1]):,} params, weight_decay={cfg.training.weight_decay}")
+    
+    # Use SGD with momentum (PyTorch reference standard)
+    if cfg.training.optimizer == "sgd":
+        optimizer = torch.optim.SGD(
+            parameters,
+            lr=cfg.training.learning_rate,
+            momentum=cfg.training.momentum,
+            weight_decay=cfg.training.weight_decay,
+            nesterov=cfg.training.get('nesterov', False)
+        )
+    elif cfg.training.optimizer == "adam":
+        # Fallback to Adam if specified
+        optimizer = torch.optim.Adam(
+            parameters,
             lr=cfg.training.learning_rate,
             weight_decay=cfg.training.weight_decay
         )
+    else:
+        raise ValueError(f"Unknown optimizer: {cfg.training.optimizer}")
     
-    scheduler = ReduceLROnPlateau(
+    # Learning rate scheduler (PyTorch reference: MultiStepLR, stepped per-epoch)
+    scheduler = torch.optim.lr_scheduler.MultiStepLR(
         optimizer,
-        mode='min',
-        factor=0.1,
-        patience=3, 
-        min_lr=1e-6
+        milestones=cfg.training.lr_steps,
+        gamma=cfg.training.lr_gamma
     )
+    
+    log.info(f"Scheduler: MultiStepLR (milestones={cfg.training.lr_steps}, gamma={cfg.training.lr_gamma})")
+    log.info(f"Warmup: Will be applied in epoch 0 only ({cfg.training.get('warmup_iters', 1000)} iterations)")
     
     # train model and get best validation loss
     best_val_loss = train_model(
@@ -323,7 +435,8 @@ def main(cfg: DictConfig):
         optimizer=optimizer,
         scheduler=scheduler,
         device=device,
-        cfg=cfg
+        cfg=cfg,
+        model_ema=model_ema
     )
     gc.collect() #to avoid CUDA out of memory error on optuna
     torch.cuda.empty_cache()

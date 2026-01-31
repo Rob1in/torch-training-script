@@ -18,8 +18,7 @@
 
 name: optuna
 best_params:
-  learning_rate: 0.001
-  weight_decay: 1e-5
-  cls_loss_weight: 0.5
-  rpn_loss_weight: 0.5
+  learning_rate: 0.0025  # PyTorch default for 1 GPU (0.02/8)
+  weight_decay: 0.0001
+  momentum: 0.9
 best_value: null

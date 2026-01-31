@@ -4,7 +4,7 @@
   num_classes: 1  # Will be auto-updated based on dataset (number of classes discovered)
   pretrained: true
   transform:
-    input_size: [320, 320]
+    input_size: [320, 320] 
     image_mean: [0.485, 0.456, 0.406]  # ImageNet RGB stats
     image_std: [0.229, 0.224, 0.225] 
   backbone: mobilenet_v3_large

@@ -34,19 +34,73 @@ classes:
   
 # Training configuration using pre-computed optimization results
 training:
-  batch_size: 32
-  num_epochs: 25
-  learning_rate: ${optimization_results.best_params.learning_rate} 
-  weight_decay: ${optimization_results.best_params.weight_decay} 
-  early_stopping_patience: 15 
+  # Batch size - use 16 for 24GB GPU
+  batch_size: 16
+  num_epochs: 26
+  
+  # Optimizer settings (PyTorch reference)
+  optimizer: sgd  # sgd or adam
+  learning_rate: 0.0025  # Base LR: 0.02/8*1 for single GPU (PyTorch default: 0.02 for 8 GPUs)
+  momentum: 0.9  # SGD momentum
+  weight_decay: 0.0001  # L2 regularization for non-normalization layers
+  norm_weight_decay: null  # Weight decay for normalization layers (null = same as weight_decay)
+  nesterov: false
+  
+  # Learning rate schedule (PyTorch reference)
+  lr_steps: [16, 22]  # Reduce LR at these epochs
+  lr_gamma: 0.1  # Multiply LR by this factor
+  
+  # Warmup settings (applied only in epoch 0)
+  warmup_iters: 1000  # Number of iterations for warmup in first epoch
+  warmup_factor: 0.001  # Start at 0.1% of base LR (1/1000)
+  
+  # Training settings
+  gradient_clip: 0.0  # Max gradient norm (0 to disable, PyTorch reference doesn't use it)
+  early_stopping_patience: 15
   checkpoint_dir: checkpoints
   num_workers: 1
   pin_memory: false
-  loss:
-    cls_loss_weight: ${optimization_results.best_params.cls_loss_weight}
-    box_loss_weight: ${eval:1 - ${optimization_results.best_params.cls_loss_weight}}
-    rpn_loss_weight: ${optimization_results.best_params.rpn_loss_weight}
-    rpn_box_reg_loss_weight: ${eval:1 - ${optimization_results.best_params.rpn_loss_weight}}
+  
+  # Model EMA (Exponential Moving Average)
+  use_ema: true  # Enable EMA for more stable models (+0.5-1.0 mAP)
+  ema_decay: 0.9998  # EMA decay rate (0.9998 or 0.9999)
+  
+  # Transfer Learning: Layer Freezing Strategy
+  # Only applies when using pretrained weights (model.pretrained=true)
+  freeze_backbone: false  # Freeze backbone (ALL MODELS: feature extractor)
+  freeze_fpn: false       # Freeze FPN (FASTER R-CNN ONLY, ignored for other models)
+  freeze_rpn: false       # Freeze RPN (FASTER R-CNN ONLY, ignored for other models)
+  freeze_all: false       # Freeze everything except detection head (ALL MODELS)
+  
+  # Transfer Learning Strategy Guide:
+  # NOTE: freeze_fpn and freeze_rpn ONLY work with Faster R-CNN
+  #       For SSDLite/EfficientNet/SimpleDetector, only freeze_backbone and freeze_all apply
+  # 
+  # Full Fine-tuning (DEFAULT - Best for most cases):
+  #   freeze_backbone: false (+ freeze_fpn: false, freeze_rpn: false for Faster R-CNN)
+  #   - Trains all layers with discriminative LRs (backbone_lr_factor=0.1)
+  #   - Best when: You have 1000+ images per class
+  #   - Training time: Slower, more GPU memory
+  #
+  # Feature Extraction (Fastest, prevents overfitting):
+  #   Faster R-CNN: freeze_backbone: true, freeze_fpn: true, freeze_rpn: true
+  #   Other models: freeze_backbone: true
+  #   - Only trains detection head (classification + box regression)
+  #   - Best when: Small dataset (<500 images) or quick experimentation
+  #   - Training time: Very fast, low GPU memory
+  #
+  # Partial Fine-tuning (Balanced):
+  #   Faster R-CNN: freeze_backbone: true, freeze_fpn: false, freeze_rpn: false
+  #   Other models: Not applicable (only backbone to freeze)
+  #   - Trains FPN, RPN, and detection head (Faster R-CNN only)
+  #   - Best when: Medium dataset (500-1000 images)
+  #   - Training time: Medium
+  #
+  # Head-only Training (Most aggressive):
+  #   freeze_all: true (ALL MODELS)
+  #   - Only trains the final prediction layer
+  #   - Best when: Very small dataset (<100 images) or debugging
+  #   - Training time: Fastest
 
 # Logging
 logging:

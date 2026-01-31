@@ -27,6 +27,12 @@ python src/eval.py
 - **RGB Images Only**: Optimized for 3-channel RGB input (no grayscale support)
 - **JSONL Dataset Format**: Uses JSONL files with normalized bounding box annotations
 - **Multiple Model Architectures**: Supports Faster R-CNN, SSD-Lite, EfficientNet, and Simple Detector
+- **PyTorch Reference Training**: Follows PyTorch's official detection training best practices
+  - SGD optimizer with momentum
+  - Linear warmup + MultiStepLR scheduling
+  - Per-parameter learning rates (lower LR for backbone)
+  - Gradient clipping
+  - Default loss weighting from torchvision
 - **Automatic Class Discovery**: Can auto-discover classes from dataset or use explicit configuration
 - **COCO Evaluation**: Automatic conversion from JSONL to COCO format for evaluation metrics
 - **Hydra Configuration**: Flexible configuration management with Hydra
@@ -216,6 +222,40 @@ This will:
 
 **Update optimization results:**
 After a successful sweep, copy the best parameters to `configs/optimization_results/` for future use.
+
+### Training Hyperparameters
+
+The training pipeline follows **PyTorch's reference detection training** best practices:
+
+#### Optimizer
+- **Type**: SGD with Nesterov momentum
+- **Learning Rate**: 0.01 (base, for batch_size=16)
+- **Momentum**: 0.9
+- **Weight Decay**: 0.0001 (L2 regularization)
+- **Per-parameter LR**: Backbone gets 10x lower learning rate (0.001 by default)
+
+#### Learning Rate Schedule
+- **Warmup**: Linear warmup for first 500 iterations
+  - Starts at 0.1% of base LR (0.00001 for base=0.01)
+  - Linearly increases to base LR
+- **Schedule**: MultiStepLR
+  - Reduces LR by 10x at epochs [16, 22] (for 26-epoch training)
+  - Adjustable via `training.lr_steps` in config
+
+#### Gradient Clipping
+- **Max Norm**: 10.0
+- Prevents exploding gradients during training
+
+#### Loss Function
+- Uses **default torchvision loss weights** (no custom weighting)
+- For Faster R-CNN: combines RPN + detection head losses
+- For SSD-Lite: combines classification + localization losses
+
+**Scaling for batch size:**
+If you change batch size, scale the learning rate linearly:
+- batch_size=8 → lr=0.005
+- batch_size=16 → lr=0.01 (default)
+- batch_size=32 → lr=0.02
 
 ### Understanding Output Directories
 

@@ -231,7 +231,7 @@ def main(cfg: DictConfig):
         model = SSDLiteDetector(cfg).to(device)
     else:
         raise ValueError(f"Unknown model type: {cfg.model.name}")
-    
+ 
     # Create test dataset with classes from config
     test_dataset = ViamDataset(
         jsonl_path=cfg.dataset.data.test_jsonl,
@@ -251,7 +251,7 @@ def main(cfg: DictConfig):
     model.load_state_dict(checkpoint['model_state_dict'])
 
     test_transform = build_transforms(cfg, is_train=False, test=True)
-    
+
     # MPS doesn't support multiprocessing, so set num_workers=0
     # Also disable pin_memory for MPS (only useful for CUDA)
     num_workers = 0 if device.type == 'mps' else cfg.training.num_workers
