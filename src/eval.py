@@ -17,8 +17,6 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from datasets.viam_dataset import ViamDataset
-from models.custom_detector import SimpleDetector
-from models.effnet_detector import EfficientNetDetector
 from models.faster_rcnn_detector import FasterRCNNDetector
 from models.ssdlite_detector import SSDLiteDetector
 from utils.coco_converter import jsonl_to_coco
@@ -88,21 +86,8 @@ def evaluate_model(model, data_loader, cfg: DictConfig):
         for batch_idx, (data, targets) in enumerate(tqdm(data_loader)):
             model_output = model(data)
             
-            # Convert model output to list of predictions per image
-            if cfg.model.name in ["faster_rcnn", "ssdlite"]:
-                predictions = model_output  # Already a list
-            elif cfg.model.name in ["effnet", "custom_detector"]:
-                # Model returns dict with batch predictions, need to split by image
-                predictions = []
-                batch_size = model_output['boxes'].shape[0]
-                for i in range(batch_size):
-                    predictions.append({
-                        'boxes': model_output['boxes'][i:i+1],  # Keep as 2D tensor
-                        'scores': model_output['scores'][i],
-                        'labels': model_output['labels'][i:i+1] if 'labels' in model_output else torch.ones(1, dtype=torch.int64)
-                    })
-            else:
-                raise ValueError(f"Unknown model name: {cfg.model.name}")
+            # Torchvision models return list of predictions per image
+            predictions = model_output
         
             # Visualize random sample of images
             for i in range(len(data)):
@@ -220,17 +205,13 @@ def main(cfg: DictConfig):
         log.info(f"Setting model.num_classes to {num_classes} (from {len(classes)} classes)")
         cfg.model.num_classes = num_classes
     
-    #Create model
-    if cfg.model.name == "custom_detector":
-        model = SimpleDetector(cfg).to(device)
-    elif cfg.model.name == "faster_rcnn":
+    # Create model
+    if cfg.model.name == "faster_rcnn":
         model = FasterRCNNDetector(cfg).to(device)
-    elif cfg.model.name == "effnet":
-        model = EfficientNetDetector(cfg).to(device)
     elif cfg.model.name == "ssdlite":
         model = SSDLiteDetector(cfg).to(device)
     else:
-        raise ValueError(f"Unknown model type: {cfg.model.name}")
+        raise ValueError(f"Unknown model: {cfg.model.name}. Supported models: faster_rcnn, ssdlite")
  
     # Create test dataset with classes from config
     test_dataset = ViamDataset(
