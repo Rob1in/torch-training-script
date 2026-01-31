@@ -7,6 +7,7 @@ from pathlib import Path
 
 import hydra
 import torch
+import torch.multiprocessing as mp
 from omegaconf import DictConfig, OmegaConf
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
@@ -164,6 +165,13 @@ def main(cfg: DictConfig):
     # Set random seed for reproducibility
     set_seed(cfg.experiment.seed)
     log.info(f"Set random seed to {cfg.experiment.seed} for reproducibility")
+    
+    # CUDA multiprocessing: Set spawn method to avoid fork issues
+    if torch.cuda.is_available():
+        try:
+            mp.set_start_method('spawn', force=True)
+        except RuntimeError:
+            pass  # Already set
     
     # Device selection: CUDA > MPS > CPU
     if torch.cuda.is_available():
