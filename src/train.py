@@ -129,15 +129,7 @@ def evaluate(model, data_loader, device, epoch, cfg):
     Returns:
         Average validation loss
     """
-    was_training = model.training
-    
-    # For torchvision models: set to train mode to get loss dict
-    # But freeze BatchNorm and Dropout to prevent training
-    model.train()
-    for m in model.modules():
-        if isinstance(m, (torch.nn.BatchNorm2d, torch.nn.Dropout)):
-            m.eval()
-    
+    model.eval()  # Set to eval mode for proper validation
     val_loss = 0.0
     
     with torch.no_grad():
@@ -145,9 +137,6 @@ def evaluate(model, data_loader, device, epoch, cfg):
             loss_dict = model(images, targets)
             batch_loss = sum(loss_dict.values()).item()
             val_loss += batch_loss
-    
-    # Restore original training state
-    model.train(was_training)
     
     return val_loss / len(data_loader)
 

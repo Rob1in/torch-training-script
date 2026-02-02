@@ -88,4 +88,4 @@ logging:
   save_dir: ${hydra:runtime.output_dir}
 
 evaluation:
-  confidence_threshold: 0.1
+  confidence_threshold: 0.7

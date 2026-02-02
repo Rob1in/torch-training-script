@@ -17,8 +17,8 @@ python src/train.py --config-name=train training.batch_size=16 training.num_epoc
 # Run hyperparameter optimization (requires: pip install -e ".[sweep]")
 python src/train.py --config-name=sweep --multirun
 
-# Evaluate a trained model
-python src/eval.py
+# Evaluate a trained model (automatically loads training config and checkpoint)
+python src/eval.py +run_dir=outputs/2026-01-31/20-15-26
 ```
 
 ## Features
@@ -373,28 +373,64 @@ python src/train.py --config-name=sweep --multirun
 
 ## Evaluation
 
-### Basic Evaluation
+### Recommended: Automatic Evaluation from Training Run
+
+The **easiest way** to evaluate a model is to point to its training output directory. This automatically loads the training config, model architecture, and checkpoint:
 
 ```bash
-python src/eval.py
+# Evaluate using the exact same config as training
+python src/eval.py +run_dir=outputs/2026-01-31/20-15-26
+
+# Override test dataset if needed
+python src/eval.py \
+    +run_dir=outputs/2026-01-31/20-15-26 \
+    dataset.data.test_jsonl=path/to/test.jsonl \
+    dataset.data.test_data_dir=path/to/test_images
 ```
 
-**Note**: Update the checkpoint path in `src/eval.py` (line ~229) to point to your trained model checkpoint.
+**What happens:**
+1. Loads training config from `run_dir/.hydra/config.yaml`
+2. Auto-detects checkpoint at `run_dir/best_model.pth`
+3. Uses **Model EMA weights** if available (better evaluation performance)
+4. Scales predictions back to **original image dimensions**
+5. Allows overriding test dataset paths via CLI
+
+### Manual Evaluation (Old Method)
+
+If you need full control or want to use a checkpoint without a training directory:
+
+```bash
+python src/eval.py \
+    --config-name=train \
+    model=faster_rcnn \
+    dataset.data.test_jsonl=path/to/test.jsonl \
+    dataset.data.test_data_dir=path/to/images \
+    +checkpoint_path=path/to/model.pth
+```
 
 ### Evaluation Outputs
 
-Evaluation generates:
-- COCO format predictions JSON file
-- COCO evaluation metrics (AP, AP50, AP75, etc.)
-- Visualization images with predicted bounding boxes
-- Automatic JSONL to COCO conversion for ground truth (if needed)
+Evaluation generates in `outputs/YYYY-MM-DD/HH-MM-SS/`:
+- **`{model}_predictions.json`** - COCO format predictions
+- **`{model}_metrics.json`** - mAP, AP50, AP75, etc.
+- **`ground_truth_coco.json`** - Auto-converted COCO format ground truth
+- **`visualizations/`** - 7 random images with predicted + ground truth boxes
+- **`eval.log`** - Detailed evaluation log
 
-### COCO Metrics
+### COCO Metrics Explained
 
-The evaluation script automatically:
-1. Converts JSONL ground truth to COCO format (if not provided)
-2. Evaluates predictions using COCO metrics
-3. Reports AP (Average Precision) at different IoU thresholds
+The evaluation script reports:
+- **AP** (mAP @ IoU=0.50:0.95): Main metric, stricter evaluation
+- **AP50** (mAP @ IoU=0.50): Common metric, more lenient
+- **AP75** (mAP @ IoU=0.75): Stricter localization
+- **APs, APm, APl**: AP for small, medium, large objects
+- **AR** (Average Recall): Max recall given a fixed number of detections
+
+**Automatic Processing:**
+1. Converts JSONL ground truth → COCO format (if needed)
+2. Scales predictions to original image dimensions
+3. Evaluates using pycocotools
+4. Saves results and visualizations
 
 ## Project Structure
 

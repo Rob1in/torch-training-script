@@ -10,7 +10,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from hydra.utils import get_original_cwd
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 from pycocotools.coco import COCO
 from pycocotools.cocoeval import COCOeval
 from torch.utils.data import DataLoader
@@ -103,12 +103,26 @@ def evaluate_model(model, data_loader, cfg: DictConfig):
                     )
                     images_to_plot.remove(global_image_idx)  # avoid duplicates
                         
-            for pred, target in zip(predictions, targets):
+            for i, (pred, target) in enumerate(zip(predictions, targets)):
                 image_id = target['image_id'].item()
                 boxes = pred['boxes']
                 scores = pred['scores']
                 total_predictions += 1
                 total_boxes += len(boxes)
+                
+                # Scale predictions back to original image dimensions
+                if 'orig_size' in target:
+                    orig_h, orig_w = target['orig_size']
+                    # Get current (transformed) image dimensions
+                    _, curr_h, curr_w = data[i].shape
+                    scale_h = orig_h / curr_h
+                    scale_w = orig_w / curr_w
+                    
+                    # Scale boxes
+                    if len(boxes) > 0:
+                        boxes = boxes.clone()
+                        boxes[:, [0, 2]] *= scale_w  # x coordinates
+                        boxes[:, [1, 3]] *= scale_h  # y coordinates
                 
                 # statistics about confidence scores for prediction boxes
                 if len(scores) > 0:
@@ -160,6 +174,66 @@ def main(cfg: DictConfig):
     base_dir = Path(get_original_cwd())
     mp.set_start_method('spawn', force=True)
     
+    # ============================================================
+    # NEW: Load training config from run_dir if provided
+    # ============================================================
+    # Usage: python src/eval.py run_dir=outputs/20-15-26
+    # This will automatically load the training config and checkpoint
+    if 'run_dir' in cfg:
+        run_dir = Path(cfg.run_dir)
+        if not run_dir.is_absolute():
+            run_dir = base_dir / run_dir
+        
+        # Load the training config from .hydra/config.yaml
+        training_config_path = run_dir / ".hydra" / "config.yaml"
+        if not training_config_path.exists():
+            raise FileNotFoundError(
+                f"Training config not found: {training_config_path}\n"
+                f"Make sure the run_dir contains a .hydra folder from training."
+            )
+        
+        log.info(f"Loading training config from: {training_config_path}")
+        training_cfg = OmegaConf.load(training_config_path)
+        
+        # Set struct mode to False to allow adding new keys
+        OmegaConf.set_struct(training_cfg, False)
+        
+        # Store CLI overrides before replacing config
+        cli_dataset_overrides = OmegaConf.to_container(cfg.get('dataset', {}))
+        cli_evaluation_overrides = OmegaConf.to_container(cfg.get('evaluation', {}))
+        
+        # Replace current config with training config
+        cfg = training_cfg
+        
+        # Apply dataset overrides from CLI (if any were provided)
+        if cli_dataset_overrides and 'data' in cli_dataset_overrides:
+            for key, value in cli_dataset_overrides['data'].items():
+                # Only override if it looks like a user-provided path (not placeholder)
+                if value and not value.startswith('path/to/'):
+                    cfg.dataset.data[key] = value
+        
+        # Apply evaluation overrides from CLI (if any were provided)
+        if cli_evaluation_overrides:
+            for key, value in cli_evaluation_overrides.items():
+                if key in cfg.evaluation:
+                    cfg.evaluation[key] = value
+                    log.info(f"Applied CLI override: evaluation.{key}={value}")
+        
+        # Auto-set checkpoint_path if not explicitly provided
+        if 'checkpoint_path' not in cfg or cfg.checkpoint_path is None:
+            checkpoint_path = run_dir / "best_model.pth"
+            if checkpoint_path.exists():
+                OmegaConf.update(cfg, "checkpoint_path", str(checkpoint_path))
+                log.info(f"Auto-detected checkpoint: {checkpoint_path}")
+            else:
+                log.warning(f"No checkpoint found at {checkpoint_path}, you'll need to specify +checkpoint_path=...")
+        
+        log.info(f"Loaded training config from run: {run_dir.name}")
+        log.info(f"  Model: {cfg.model.name}")
+        log.info(f"  Classes: {cfg.get('classes', 'auto-discover')}")
+        log.info(f"  Test dataset: {cfg.dataset.data.test_jsonl}")
+    # ============================================================
+    
     # Device selection with fallback: CUDA -> MPS -> CPU
     requested_device = cfg.model.device
     if requested_device == "cuda":
@@ -206,10 +280,13 @@ def main(cfg: DictConfig):
         cfg.model.num_classes = num_classes
     
     # Create model
+    log.info(f"Creating model: {cfg.model.name}")
     if cfg.model.name == "faster_rcnn":
         model = FasterRCNNDetector(cfg).to(device)
+        log.info("Faster R-CNN model created and moved to device")
     elif cfg.model.name == "ssdlite":
         model = SSDLiteDetector(cfg).to(device)
+        log.info("SSDLite model created and moved to device")
     else:
         raise ValueError(f"Unknown model: {cfg.model.name}. Supported models: faster_rcnn, ssdlite")
  
@@ -220,16 +297,30 @@ def main(cfg: DictConfig):
         classes=classes,
     )
  
-    # Checkpoint path - update this to your trained model
-    # Example: outputs/2026-01-30/14-25-30/best_model.pth
-    checkpoint_path = cfg.get('checkpoint_path', 'checkpoints/best_model.pth')
-    if not Path(checkpoint_path).exists():
-        raise FileNotFoundError(
-            f"Checkpoint not found: {checkpoint_path}\n"
-            f"Please specify checkpoint path with: checkpoint_path=<path/to/model.pth>"
+    # Checkpoint path
+    checkpoint_path = cfg.get('checkpoint_path', None)
+    if checkpoint_path is None:
+        raise ValueError(
+            "No checkpoint specified. Use one of:\n"
+            "  1. run_dir=outputs/20-15-26  (loads config and checkpoint automatically)\n"
+            "  2. +checkpoint_path=path/to/model.pth  (manual checkpoint path)"
         )
+    
+    checkpoint_path = Path(checkpoint_path)
+    if not checkpoint_path.is_absolute():
+        checkpoint_path = base_dir / checkpoint_path
+    
+    if not checkpoint_path.exists():
+        raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
     checkpoint = torch.load(checkpoint_path, map_location=device)
-    model.load_state_dict(checkpoint['model_state_dict'])
+    
+    # Prefer EMA weights if available (better for evaluation)
+    if 'model_ema_state_dict' in checkpoint:
+        log.info("Loading Model EMA weights for evaluation")
+        model.load_state_dict(checkpoint['model_ema_state_dict'])
+    else:
+        log.info("Loading standard model weights for evaluation")
+        model.load_state_dict(checkpoint['model_state_dict'])
 
     test_transform = build_transforms(cfg, is_train=False, test=True)
 
@@ -319,12 +410,13 @@ def main(cfg: DictConfig):
         'APs': coco_eval.stats[3],   # AP for small objects
         'APm': coco_eval.stats[4],   # AP for medium objects
         'APl': coco_eval.stats[5],   # AP for large objects
+        'checkpoint': str(checkpoint_path),  # Model checkpoint used for evaluation
+        'confidence_threshold': cfg.evaluation.confidence_threshold,  # Confidence threshold used
     }
     
     metrics_file = output_dir / f"{cfg.model.name}_metrics.json"
     with open(metrics_file, "w") as f:
         json.dump(metrics, f, indent=4)
-        json.dump(checkpoint_path, f, indent=4)
     
     log.info(f"AP50: {metrics['AP50']:.3f}")
 

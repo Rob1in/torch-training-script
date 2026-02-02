@@ -180,7 +180,8 @@ class ViamDataset(Dataset):
         target = {
             'boxes': boxes,
             'labels': labels,
-            'image_id': torch.tensor([idx])  # Use dataset index as image_id
+            'image_id': torch.tensor([idx]),  # Use dataset index as image_id
+            'orig_size': torch.tensor([img_height, img_width])  # Original image dimensions [H, W]
         }
         
         # Note: Transforms are applied by GPUCollate, not here
