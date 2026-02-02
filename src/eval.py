@@ -12,7 +12,6 @@ import torch
 from hydra.utils import get_original_cwd
 from omegaconf import DictConfig, OmegaConf
 from pycocotools.coco import COCO
-from pycocotools.cocoeval import COCOeval
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
@@ -20,6 +19,7 @@ from datasets.viam_dataset import ViamDataset
 from models.faster_rcnn_detector import FasterRCNNDetector
 from models.ssdlite_detector import SSDLiteDetector
 from utils.coco_converter import jsonl_to_coco
+from utils.coco_eval import collect_predictions, evaluate_coco_predictions
 from utils.transforms import GPUCollate, build_transforms
 
 log = logging.getLogger(__name__)
@@ -62,112 +62,73 @@ def visualize_predictions(image,predictions,targets,cfg: DictConfig, title="", o
         plt.savefig(save_path)
     plt.close()  
 
-def evaluate_model(model, data_loader, cfg: DictConfig):
+def evaluate_model(model, data_loader, cfg: DictConfig, device: torch.device):
     """
-    Evaluate model on test set and compute COCO metrics
+    Evaluate model on test set, visualize samples, and collect predictions for COCO metrics.
+    
+    NOTE: This function collects ALL predictions (no confidence filtering) for COCO evaluation.
+    The confidence threshold in cfg is only used for visualization.
     """
     model.eval()
-    results = []
-    total_predictions = 0
-    total_boxes = 0
     
-    # Track confidence score statistics
-    all_scores = []
-    boxes_above_threshold = 0
-    boxes_below_threshold = 0
-
+    # Visualize random samples
     num_images_to_visualize = 7 
     total_images = len(data_loader.dataset)
     images_to_plot = set(random.sample(range(total_images), min(num_images_to_visualize, total_images)))
-    # save in visualizations directory
     vis_dir = Path(cfg.logging.save_dir) / "visualizations"
     
+    # Track confidence score statistics for reporting
+    all_scores = []
+    total_boxes = 0
+    
     with torch.no_grad():
-        for batch_idx, (data, targets) in enumerate(tqdm(data_loader)):
+        for batch_idx, (data, targets) in enumerate(tqdm(data_loader, desc="Visualizing")):
             model_output = model(data)
             
-            # Torchvision models return list of predictions per image
-            predictions = model_output
-        
             # Visualize random sample of images
             for i in range(len(data)):
                 global_image_idx = batch_idx * cfg.training.batch_size + i
                 if global_image_idx in images_to_plot:
                     visualize_predictions(
                         data[i], 
-                        predictions[i],
+                        model_output[i],
                         targets[i],
                         cfg=cfg,
                         output_dir=vis_dir, 
                         title=f"Image {targets[i]['image_id']}",
                     )
-                    images_to_plot.remove(global_image_idx)  # avoid duplicates
-                        
-            for i, (pred, target) in enumerate(zip(predictions, targets)):
-                image_id = target['image_id'].item()
-                boxes = pred['boxes']
-                scores = pred['scores']
-                total_predictions += 1
-                total_boxes += len(boxes)
-                
-                # Scale predictions back to original image dimensions
-                if 'orig_size' in target:
-                    orig_h, orig_w = target['orig_size']
-                    # Get current (transformed) image dimensions
-                    _, curr_h, curr_w = data[i].shape
-                    scale_h = orig_h / curr_h
-                    scale_w = orig_w / curr_w
-                    
-                    # Scale boxes
-                    if len(boxes) > 0:
-                        boxes = boxes.clone()
-                        boxes[:, [0, 2]] *= scale_w  # x coordinates
-                        boxes[:, [1, 3]] *= scale_h  # y coordinates
-                
-                # statistics about confidence scores for prediction boxes
-                if len(scores) > 0:
-                    all_scores.extend(scores.cpu().numpy())
-                    boxes_above_threshold += (scores > cfg.evaluation.confidence_threshold).sum().item()
-                    boxes_below_threshold += (scores <= cfg.evaluation.confidence_threshold).sum().item()
-    
-                if len(boxes) > 0:
-                    # Only include boxes with confidence > threshold
-                    mask = scores > cfg.evaluation.confidence_threshold
-                    boxes = boxes[mask]
-                    scores = scores[mask]
-                    
-                    if len(boxes) > 0:  # Check if any boxes remain after filtering
-                        # convert from [x1,y1,x2,y2] to COCO format [x,y,w,h]
-                        boxes_coco = torch.zeros_like(boxes)
-                        boxes_coco[:, 0] = boxes[:, 0]  # x
-                        boxes_coco[:, 1] = boxes[:, 1]  # y
-                        boxes_coco[:, 2] = boxes[:, 2] - boxes[:, 0]  # w
-                        boxes_coco[:, 3] = boxes[:, 3] - boxes[:, 1]  # h
-                        
-                        # Add all detections for this image
-                        # Get category_id from predictions (labels tensor)
-                        pred_labels = pred.get('labels', torch.ones(len(boxes_coco), dtype=torch.int64))
-                        if len(pred_labels) != len(boxes_coco):
-                            # If labels don't match boxes, use default category_id=1
-                            pred_labels = torch.ones(len(boxes_coco), dtype=torch.int64)
-                        
-                        results.extend([
-                            {
-                                'image_id': image_id,
-                                'category_id': label.item() if isinstance(label, torch.Tensor) else label,
-                                'bbox': box.tolist(),
-                                'score': score.item()
-                            }
-                            for box, score, label in zip(boxes_coco, scores, pred_labels)
-                        ])
+                    images_to_plot.remove(global_image_idx)
+            
+            # Collect confidence statistics
+            for pred in model_output:
+                if len(pred['scores']) > 0:
+                    all_scores.extend(pred['scores'].cpu().numpy())
+                    total_boxes += len(pred['scores'])
     
     # Log confidence score statistics
-    all_scores = np.array(all_scores)
-    log.info(f"Total boxes detected: {total_boxes}")
-    log.info(f"Boxes with confidence > {cfg.evaluation.confidence_threshold}: {boxes_above_threshold} ({boxes_above_threshold/total_boxes*100:.1f}%)")
-    log.info(f"Boxes with confidence <= {cfg.evaluation.confidence_threshold}: {boxes_below_threshold} ({boxes_below_threshold/total_boxes*100:.1f}%)")
+    if total_boxes > 0:
+        all_scores = np.array(all_scores)
+        boxes_above_threshold = np.sum(all_scores > cfg.evaluation.confidence_threshold)
+        boxes_below_threshold = np.sum(all_scores <= cfg.evaluation.confidence_threshold)
+        
+        log.info(f"Total boxes detected: {total_boxes}")
+        log.info(f"Boxes with confidence > {cfg.evaluation.confidence_threshold}: {boxes_above_threshold} ({boxes_above_threshold/total_boxes*100:.1f}%)")
+        log.info(f"Boxes with confidence <= {cfg.evaluation.confidence_threshold}: {boxes_below_threshold} ({boxes_below_threshold/total_boxes*100:.1f}%)")
+        log.info(f"Score range: min={all_scores.min():.4f}, max={all_scores.max():.4f}, mean={all_scores.mean():.4f}")
+    else:
+        log.warning("No predictions made!")
     
-    return results
+    # Collect ALL predictions for COCO evaluation (no confidence filtering!)
+    # This matches the behavior during training
+    log.info("Collecting predictions for COCO evaluation (no confidence threshold applied)...")
+    predictions = collect_predictions(
+        model=model,
+        data_loader=data_loader,
+        device=device,
+        scale_to_original=True  # Scale back to original image coordinates
+    )
+    
+    return predictions
 
 @hydra.main(config_path="../configs", config_name="train", version_base=None)
 def main(cfg: DictConfig):
@@ -201,6 +162,7 @@ def main(cfg: DictConfig):
         # Store CLI overrides before replacing config
         cli_dataset_overrides = OmegaConf.to_container(cfg.get('dataset', {}))
         cli_evaluation_overrides = OmegaConf.to_container(cfg.get('evaluation', {}))
+        cli_model_device = cfg.get('model', {}).get('device', None)
         
         # Replace current config with training config
         cfg = training_cfg
@@ -219,6 +181,11 @@ def main(cfg: DictConfig):
                     cfg.evaluation[key] = value
                     log.info(f"Applied CLI override: evaluation.{key}={value}")
         
+        # Apply model.device override from CLI (if provided)
+        if cli_model_device is not None:
+            cfg.model.device = cli_model_device
+            log.info(f"Applied CLI override: model.device={cli_model_device}")
+        
         # Auto-set checkpoint_path if not explicitly provided
         if 'checkpoint_path' not in cfg or cfg.checkpoint_path is None:
             checkpoint_path = run_dir / "best_model.pth"
@@ -234,24 +201,13 @@ def main(cfg: DictConfig):
         log.info(f"  Test dataset: {cfg.dataset.data.test_jsonl}")
     # ============================================================
     
-    # Device selection with fallback: CUDA -> MPS -> CPU
+    # Device selection with fallback: CUDA -> CPU
     requested_device = cfg.model.device
     if requested_device == "cuda":
         if torch.cuda.is_available():
             device = torch.device("cuda")
-        elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
-            log.warning("CUDA requested but not available. Falling back to MPS (macOS GPU).")
-            device = torch.device("mps")
-            cfg.model.device = "mps"
         else:
             log.warning("CUDA requested but not available. Falling back to CPU.")
-            device = torch.device("cpu")
-            cfg.model.device = "cpu"
-    elif requested_device == "mps":
-        if hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
-            device = torch.device("mps")
-        else:
-            log.warning("MPS requested but not available. Falling back to CPU.")
             device = torch.device("cpu")
             cfg.model.device = "cpu"
     else:
@@ -324,9 +280,8 @@ def main(cfg: DictConfig):
 
     test_transform = build_transforms(cfg, is_train=False, test=True)
 
-    # MPS doesn't support multiprocessing, so set num_workers=0
-    # Also disable pin_memory for MPS (only useful for CUDA)
-    num_workers = 0 if device.type == 'mps' else cfg.training.num_workers
+    # Set dataloader parameters
+    num_workers = cfg.training.num_workers
     pin_memory = cfg.training.pin_memory and device.type == 'cuda'
     
     test_loader = DataLoader(
@@ -338,16 +293,19 @@ def main(cfg: DictConfig):
         collate_fn=GPUCollate(device, test_transform)
     )
 
-    results = evaluate_model(model, test_loader, cfg)
+    # Evaluate model (visualize samples + collect predictions)
+    predictions = evaluate_model(model, test_loader, cfg, device)
 
-    # saving predictions
+    # Create output directory
     output_dir = Path(cfg.logging.save_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Save predictions to JSON
     predictions_file = output_dir / f"{cfg.model.name}_predictions.json"
     with open(predictions_file, "w") as f:
-        json.dump(results, f)
+        json.dump(predictions, f)
+    log.info(f"Saved {len(predictions)} predictions to {predictions_file}")
 
-    # COCO metrics
     # Convert JSONL to COCO format if needed
     gt_path_str = cfg.dataset.data.get('test_annotations_coco')
     gt_path = Path(gt_path_str) if gt_path_str else None
@@ -364,61 +322,37 @@ def main(cfg: DictConfig):
         )
         gt_path = coco_gt_path
     
-    with open(predictions_file, 'r') as f:
-        pred_data = json.load(f)
-    log.info(f"no of predictions: {len(pred_data)}")
-    
-    # Load COCO format ground truth
-    with open(gt_path, 'r') as f:
-        gt_data = json.load(f)
-    log.info(f"ground truth images: {len(gt_data.get('images', []))}")
-    log.info(f"ground truth annotations: {len(gt_data.get('annotations', []))}")
-
-    # Check if there are any matching image IDs
-    pred_img_ids = set(p['image_id'] for p in pred_data)
-    gt_img_ids = set(ann['image_id'] for ann in gt_data['annotations'])
-    matching_ids = pred_img_ids.intersection(gt_img_ids)
-    log.info(f"matching image IDs: {len(matching_ids)}")
-
+    # Load COCO ground truth
     coco_gt = COCO(str(gt_path))
+    log.info(f"Loaded ground truth: {len(coco_gt.imgs)} images, {len(coco_gt.anns)} annotations")
     
-    # Check if there are any predictions before loading
-    if len(results) == 0:
-        log.warning("No predictions with confidence above threshold. Skipping COCO evaluation.")
-        log.warning(f"Consider lowering the confidence threshold (current: {cfg.evaluation.confidence_threshold})")
-        log.warning("Or check if the model is properly trained and outputting reasonable predictions.")
-        return
+    # Evaluate using shared COCO evaluation function
+    # This matches the evaluation done during training
+    log.info("="*80)
+    log.info("Running COCO evaluation (same as during training)...")
+    log.info("="*80)
+    metrics = evaluate_coco_predictions(
+        predictions=predictions,
+        coco_gt=coco_gt,
+        verbose=True
+    )
     
-    coco_dt = coco_gt.loadRes(str(predictions_file))
+    # Add metadata to metrics
+    metrics['checkpoint'] = str(checkpoint_path)
+    metrics['num_predictions'] = len(predictions)
     
-    # Get all category IDs from ground truth (excluding background 0)
-    cat_ids = coco_gt.getCatIds()
-    log.info(f"Evaluating {len(cat_ids)} categories: {cat_ids}")
-    
-    coco_eval = COCOeval(cocoGt=coco_gt, cocoDt=coco_dt)
-    coco_eval.params.catIds = cat_ids  # Evaluate all categories
-    coco_eval.params.iouType = 'bbox'
-    coco_eval.evaluate()
-    coco_eval.accumulate()
-    coco_eval.summarize()
-
     # Save metrics
-    metrics = { #AP = average precision
-        'AP': coco_eval.stats[0],  # AP at IoU=0.50:0.95
-        'AP50': coco_eval.stats[1],  # AP at IoU=0.50
-        'AP75': coco_eval.stats[2],  # AP at IoU=0.75
-        'APs': coco_eval.stats[3],   # AP for small objects
-        'APm': coco_eval.stats[4],   # AP for medium objects
-        'APl': coco_eval.stats[5],   # AP for large objects
-        'checkpoint': str(checkpoint_path),  # Model checkpoint used for evaluation
-        'confidence_threshold': cfg.evaluation.confidence_threshold,  # Confidence threshold used
-    }
-    
     metrics_file = output_dir / f"{cfg.model.name}_metrics.json"
     with open(metrics_file, "w") as f:
         json.dump(metrics, f, indent=4)
+    log.info(f"Saved metrics to {metrics_file}")
     
-    log.info(f"AP50: {metrics['AP50']:.3f}")
+    log.info("="*80)
+    log.info("Final Results:")
+    log.info(f"  AP (IoU=0.50:0.95): {metrics['AP']:.4f}")
+    log.info(f"  AP50 (IoU=0.50):    {metrics['AP50']:.4f}")
+    log.info(f"  AP75 (IoU=0.75):    {metrics['AP75']:.4f}")
+    log.info("="*80)
 
 if __name__ == "__main__":
     main()

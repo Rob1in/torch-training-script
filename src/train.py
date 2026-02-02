@@ -1,10 +1,8 @@
 #training script for object detection models
 import gc
-import io
 import logging
 import math
 import sys
-from contextlib import redirect_stdout
 from pathlib import Path
 
 import hydra
@@ -12,7 +10,6 @@ import torch
 import torch.multiprocessing as mp
 from omegaconf import DictConfig, OmegaConf
 from pycocotools.coco import COCO
-from pycocotools.cocoeval import COCOeval
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
@@ -21,6 +18,7 @@ from datasets.viam_dataset import ViamDataset
 from models.faster_rcnn_detector import FasterRCNNDetector
 from models.ssdlite_detector import SSDLiteDetector
 from utils.coco_converter import jsonl_to_coco
+from utils.coco_eval import evaluate_coco
 from utils.freeze import configure_model_for_transfer_learning
 from utils.model_ema import ModelEMA
 from utils.seed import set_seed
@@ -157,146 +155,7 @@ def evaluate_loss(model, data_loader, device, epoch, cfg):
     return val_loss / len(data_loader)
 
 
-def convert_to_xywh(boxes):
-    """Convert boxes from [x1, y1, x2, y2] to [x, y, w, h] format."""
-    xmin, ymin, xmax, ymax = boxes.unbind(1)
-    return torch.stack((xmin, ymin, xmax - xmin, ymax - ymin), dim=1)
-
-
-def evaluate_coco(model, data_loader, device, coco_gt):
-    """
-    Evaluate using COCO metrics (mAP). Follows torchvision reference implementation.
-    
-    Args:
-        model: The model to evaluate
-        data_loader: Validation data loader
-        device: Device to evaluate on
-        coco_gt: COCO ground truth object
-        
-    Returns:
-        Dictionary with COCO metrics (AP, AP50, AP75, etc.)
-    """
-    model.eval()
-    
-    # Collect predictions
-    coco_results = []
-    
-    with torch.no_grad():
-        for images, targets in tqdm(data_loader, desc='COCO Eval'):
-            # Run inference (no targets passed)
-            outputs = model(images)
-            
-            # Process each image's predictions
-            for img_idx, (target, output) in enumerate(zip(targets, outputs)):
-                image_id = target['image_id'].item()
-                
-                if len(output['boxes']) == 0:
-                    continue
-                
-                # Get boxes (currently in transformed image coordinates)
-                boxes = output['boxes'].cpu()
-                scores = output['scores'].cpu()
-                labels = output['labels'].cpu()
-                
-                # Scale boxes back to original image dimensions
-                # Model returns boxes in the coordinate system of images passed to it
-                # But COCO ground truth is in original image coordinates
-                if 'orig_size' in target:
-                    orig_size = target['orig_size']
-                    orig_h = orig_size[0].item() if torch.is_tensor(orig_size[0]) else orig_size[0]
-                    orig_w = orig_size[1].item() if torch.is_tensor(orig_size[1]) else orig_size[1]
-                    
-                    # Current image dimensions (after dataset transform)
-                    curr_h, curr_w = images[img_idx].shape[-2:]
-                    
-                    # Scale boxes to original coordinates
-                    scale_h = orig_h / curr_h
-                    scale_w = orig_w / curr_w
-                    boxes = boxes.clone()  # Don't modify original
-                    boxes[:, [0, 2]] *= scale_w  # x coordinates
-                    boxes[:, [1, 3]] *= scale_h  # y coordinates
-                
-                # Convert boxes from [x1,y1,x2,y2] to COCO format [x,y,w,h]
-                boxes = convert_to_xywh(boxes)
-                
-                # Add all detections for this image
-                for box, score, label in zip(boxes, scores, labels):
-                    coco_results.append({
-                        'image_id': image_id,
-                        'category_id': label.item(),
-                        'bbox': box.tolist(),
-                        'score': score.item(),
-                    })
-    
-    # Debug information about predictions
-    log.info(f"Total predictions collected: {len(coco_results)}")
-    log.info("Note: Predictions scaled back to original image coordinates for COCO eval")
-    
-    if len(coco_results) == 0:
-        log.warning("No predictions made during COCO evaluation!")
-        return {
-            'AP': 0.0,
-            'AP50': 0.0,
-            'AP75': 0.0,
-            'APs': 0.0,
-            'APm': 0.0,
-            'APl': 0.0,
-            'AR1': 0.0,
-            'AR10': 0.0,
-            'AR100': 0.0,
-            'ARs': 0.0,
-            'ARm': 0.0,
-            'ARl': 0.0,
-        }
-    
-    # Debug: Check prediction details
-    pred_image_ids = set(r['image_id'] for r in coco_results)
-    pred_cat_ids = set(r['category_id'] for r in coco_results)
-    gt_image_ids = set(coco_gt.imgs.keys())
-    gt_cat_ids = set(coco_gt.cats.keys())
-    
-    log.info(f"Prediction image IDs: {len(pred_image_ids)} unique ({list(pred_image_ids)[:5]}...)")
-    log.info(f"Ground truth image IDs: {len(gt_image_ids)} unique ({list(gt_image_ids)[:5]}...)")
-    log.info(f"Prediction category IDs: {pred_cat_ids}")
-    log.info(f"Ground truth category IDs: {gt_cat_ids}")
-    
-    matching_img_ids = pred_image_ids.intersection(gt_image_ids)
-    matching_cat_ids = pred_cat_ids.intersection(gt_cat_ids)
-    log.info(f"Matching image IDs: {len(matching_img_ids)}")
-    log.info(f"Matching category IDs: {matching_cat_ids}")
-    
-    # Sample some predictions
-    scores = [r['score'] for r in coco_results]
-    log.info(f"Score range: min={min(scores):.4f}, max={max(scores):.4f}, mean={sum(scores)/len(scores):.4f}")
-    
-    # Run COCO evaluation
-    with redirect_stdout(io.StringIO()):
-        coco_dt = coco_gt.loadRes(coco_results)
-    
-    coco_eval = COCOeval(coco_gt, coco_dt, iouType='bbox')
-    coco_eval.evaluate()
-    coco_eval.accumulate()
-    
-    # Print summary (suppress output)
-    log.info("COCO Evaluation Results:")
-    with redirect_stdout(io.StringIO()):
-        coco_eval.summarize()
-    
-    # Return metrics as dict
-    return {
-        'AP': coco_eval.stats[0],      # AP @ IoU=0.50:0.95
-        'AP50': coco_eval.stats[1],    # AP @ IoU=0.50
-        'AP75': coco_eval.stats[2],    # AP @ IoU=0.75
-        'APs': coco_eval.stats[3],     # AP for small objects
-        'APm': coco_eval.stats[4],     # AP for medium objects
-        'APl': coco_eval.stats[5],     # AP for large objects
-        'AR1': coco_eval.stats[6],     # AR with 1 detection per image
-        'AR10': coco_eval.stats[7],    # AR with 10 detections per image
-        'AR100': coco_eval.stats[8],   # AR with 100 detections per image
-        'ARs': coco_eval.stats[9],     # AR for small objects
-        'ARm': coco_eval.stats[10],    # AR for medium objects
-        'ARl': coco_eval.stats[11],    # AR for large objects
-    }
+# COCO evaluation functions moved to utils/coco_eval.py for reuse
 
 
 @hydra.main(config_path="../configs", config_name="train", version_base=None)
@@ -317,14 +176,11 @@ def main(cfg: DictConfig):
         except RuntimeError:
             pass  # Already set
     
-    # Device selection: CUDA > MPS > CPU
+    # Device selection: CUDA > CPU
     if torch.cuda.is_available():
         device = torch.device('cuda')
-    elif torch.backends.mps.is_available():
-        log.warning("CUDA requested but not available. Falling back to MPS (macOS GPU).")
-        device = torch.device('mps')
     else:
-        log.warning("Neither CUDA nor MPS available. Falling back to CPU.")
+        log.warning("CUDA not available. Falling back to CPU.")
         device = torch.device('cpu')
     
     log.info(f"Using device: {device}")
@@ -400,8 +256,8 @@ def main(cfg: DictConfig):
     
     # Create dataloaders
     # PyTorch reference: batch_size per GPU, we're using 1 GPU
-    num_workers = 0 if device.type == 'mps' else cfg.training.num_workers
-    pin_memory = cfg.training.pin_memory and device.type != 'mps'
+    num_workers = cfg.training.num_workers
+    pin_memory = cfg.training.pin_memory and device.type == 'cuda'
     
     train_loader = DataLoader(
         train_dataset,
