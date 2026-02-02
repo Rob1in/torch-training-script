@@ -58,12 +58,7 @@ def train_one_epoch(model, optimizer, data_loader, device, epoch, cfg, model_ema
         log.info(f"Epoch 0: Applying warmup for {warmup_iters} iterations (start_factor={warmup_factor})")
     
     train_loss = 0.0
-    train_losses = {
-        'loss_classifier': 0.0,
-        'loss_box_reg': 0.0,
-        'loss_objectness': 0.0,
-        'loss_rpn_box_reg': 0.0
-    }
+    train_losses = {}  # Dynamic loss tracking - will auto-populate based on model's loss keys
     
     pbar = tqdm(data_loader, desc=f'Epoch {epoch+1} [Train]')
     
@@ -97,9 +92,11 @@ def train_one_epoch(model, optimizer, data_loader, device, epoch, cfg, model_ema
         if warmup_scheduler is not None:
             warmup_scheduler.step()
         
-        # Accumulate losses for logging
+        # Accumulate losses for logging (dynamic keys for different model architectures)
         train_loss += loss_value
         for k, v in loss_dict.items():
+            if k not in train_losses:
+                train_losses[k] = 0.0
             train_losses[k] += v.item()
         
         # Update progress bar
