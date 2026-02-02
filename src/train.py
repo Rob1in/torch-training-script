@@ -1,14 +1,18 @@
 #training script for object detection models
 import gc
+import io
 import logging
 import math
 import sys
+from contextlib import redirect_stdout
 from pathlib import Path
 
 import hydra
 import torch
 import torch.multiprocessing as mp
 from omegaconf import DictConfig, OmegaConf
+from pycocotools.coco import COCO
+from pycocotools.cocoeval import COCOeval
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
@@ -16,6 +20,7 @@ from tqdm import tqdm
 from datasets.viam_dataset import ViamDataset
 from models.faster_rcnn_detector import FasterRCNNDetector
 from models.ssdlite_detector import SSDLiteDetector
+from utils.coco_converter import jsonl_to_coco
 from utils.freeze import configure_model_for_transfer_learning
 from utils.model_ema import ModelEMA
 from utils.seed import set_seed
@@ -115,9 +120,10 @@ def train_one_epoch(model, optimizer, data_loader, device, epoch, cfg, model_ema
     }
 
 
-def evaluate(model, data_loader, device, epoch, cfg):
+def evaluate_loss(model, data_loader, device, epoch, cfg):
     """
-    Evaluate on validation set. Returns average validation loss.
+    Evaluate validation loss. Keeps model in train mode but freezes BatchNorm/Dropout.
+    This allows computing loss during validation (detection models don't compute loss in eval mode).
     
     Args:
         model: The model to evaluate
@@ -129,7 +135,14 @@ def evaluate(model, data_loader, device, epoch, cfg):
     Returns:
         Average validation loss
     """
-    model.eval()  # Set to eval mode for proper validation
+    was_training = model.training
+    
+    # Keep model in train mode to get loss dict, but freeze BatchNorm/Dropout
+    model.train()
+    for m in model.modules():
+        if isinstance(m, (torch.nn.BatchNorm2d, torch.nn.Dropout)):
+            m.eval()
+    
     val_loss = 0.0
     
     with torch.no_grad():
@@ -138,7 +151,108 @@ def evaluate(model, data_loader, device, epoch, cfg):
             batch_loss = sum(loss_dict.values()).item()
             val_loss += batch_loss
     
+    # Restore original training state
+    model.train(was_training)
+    
     return val_loss / len(data_loader)
+
+
+def convert_to_xywh(boxes):
+    """Convert boxes from [x1, y1, x2, y2] to [x, y, w, h] format."""
+    xmin, ymin, xmax, ymax = boxes.unbind(1)
+    return torch.stack((xmin, ymin, xmax - xmin, ymax - ymin), dim=1)
+
+
+def evaluate_coco(model, data_loader, device, coco_gt):
+    """
+    Evaluate using COCO metrics (mAP). Follows torchvision reference implementation.
+    
+    Args:
+        model: The model to evaluate
+        data_loader: Validation data loader
+        device: Device to evaluate on
+        coco_gt: COCO ground truth object
+        
+    Returns:
+        Dictionary with COCO metrics (AP, AP50, AP75, etc.)
+    """
+    model.eval()
+    
+    # Collect predictions
+    coco_results = []
+    
+    with torch.no_grad():
+        for images, targets in tqdm(data_loader, desc='COCO Eval'):
+            # Run inference (no targets passed)
+            outputs = model(images)
+            
+            # Process each image's predictions
+            for target, output in zip(targets, outputs):
+                image_id = target['image_id'].item()
+                
+                if len(output['boxes']) == 0:
+                    continue
+                
+                # Convert boxes from [x1,y1,x2,y2] to COCO format [x,y,w,h]
+                boxes = convert_to_xywh(output['boxes']).cpu()
+                scores = output['scores'].cpu()
+                labels = output['labels'].cpu()
+                
+                # Add all detections for this image
+                for box, score, label in zip(boxes, scores, labels):
+                    coco_results.append({
+                        'image_id': image_id,
+                        'category_id': label.item(),
+                        'bbox': box.tolist(),
+                        'score': score.item(),
+                    })
+    
+    # If no predictions, return zeros
+    if len(coco_results) == 0:
+        log.warning("No predictions made during COCO evaluation!")
+        return {
+            'AP': 0.0,
+            'AP50': 0.0,
+            'AP75': 0.0,
+            'APs': 0.0,
+            'APm': 0.0,
+            'APl': 0.0,
+            'AR1': 0.0,
+            'AR10': 0.0,
+            'AR100': 0.0,
+            'ARs': 0.0,
+            'ARm': 0.0,
+            'ARl': 0.0,
+        }
+    
+    # Run COCO evaluation
+    with redirect_stdout(io.StringIO()):
+        coco_dt = coco_gt.loadRes(coco_results)
+    
+    coco_eval = COCOeval(coco_gt, coco_dt, iouType='bbox')
+    coco_eval.evaluate()
+    coco_eval.accumulate()
+    
+    # Print summary (suppress output)
+    log.info("COCO Evaluation Results:")
+    with redirect_stdout(io.StringIO()):
+        coco_eval.summarize()
+    
+    # Return metrics as dict
+    return {
+        'AP': coco_eval.stats[0],      # AP @ IoU=0.50:0.95
+        'AP50': coco_eval.stats[1],    # AP @ IoU=0.50
+        'AP75': coco_eval.stats[2],    # AP @ IoU=0.75
+        'APs': coco_eval.stats[3],     # AP for small objects
+        'APm': coco_eval.stats[4],     # AP for medium objects
+        'APl': coco_eval.stats[5],     # AP for large objects
+        'AR1': coco_eval.stats[6],     # AR with 1 detection per image
+        'AR10': coco_eval.stats[7],    # AR with 10 detections per image
+        'AR100': coco_eval.stats[8],   # AR with 100 detections per image
+        'ARs': coco_eval.stats[9],     # AR for small objects
+        'ARm': coco_eval.stats[10],    # AR for medium objects
+        'ARl': coco_eval.stats[11],    # AR for large objects
+    }
 
 
 @hydra.main(config_path="../configs", config_name="train", version_base=None)
@@ -303,12 +417,26 @@ def main(cfg: DictConfig):
     log.info(f"Scheduler: MultiStepLR (milestones={cfg.training.lr_steps}, gamma={cfg.training.lr_gamma})")
     log.info(f"Warmup: Will be applied in epoch 0 only ({cfg.training.get('warmup_iters', 1000)} iterations)")
     
+    # Prepare COCO ground truth for validation evaluation
+    log.info("Preparing COCO ground truth for validation...")
+    val_coco_path = Path(cfg.logging.save_dir) / 'val_ground_truth_coco.json'
+    jsonl_to_coco(
+        jsonl_path=cfg.dataset.data.val_jsonl,
+        data_dir=cfg.dataset.data.val_data_dir,
+        output_path=val_coco_path,
+        classes=classes,
+    )
+    coco_gt = COCO(str(val_coco_path))
+    log.info(f"COCO ground truth created: {len(coco_gt.imgs)} images, {len(coco_gt.anns)} annotations")
+    
     # Training loop
     writer = SummaryWriter(Path(cfg.logging.save_dir) / 'tensorboard')
-    best_val_loss = float('inf')
+    best_map = 0.0  # Track best mAP (AP@0.50:0.95)
+    best_map50 = 0.0  # Also track AP50 for reference
     patience_counter = 0
     
     log.info("Starting training...")
+    log.info("=" * 80)
     
     for epoch in range(cfg.training.num_epochs):
         # Train one epoch
@@ -325,28 +453,43 @@ def main(cfg: DictConfig):
         # Evaluate on validation set
         # Use EMA model if available (typically performs better)
         eval_model = model_ema.module if model_ema is not None else model
-        val_loss = evaluate(eval_model, val_loader, device, epoch, cfg)
         
-        # Log metrics
+        # 1. Compute validation loss (for monitoring)
+        val_loss = evaluate_loss(eval_model, val_loader, device, epoch, cfg)
+        
+        # 2. Compute COCO metrics (for model selection)
+        log.info("Running COCO evaluation on validation set...")
+        coco_metrics = evaluate_coco(eval_model, val_loader, device, coco_gt)
+        
+        # Log all metrics to TensorBoard
         writer.add_scalar('Loss/train', train_metrics['loss'], epoch)
         writer.add_scalar('Loss/val', val_loss, epoch)
         
         for loss_name, loss_value in train_metrics['loss_dict'].items():
             writer.add_scalar(f'EpochLoss/{loss_name}', loss_value, epoch)
         
+        # Log COCO metrics
+        writer.add_scalar('COCO/AP', coco_metrics['AP'], epoch)
+        writer.add_scalar('COCO/AP50', coco_metrics['AP50'], epoch)
+        writer.add_scalar('COCO/AP75', coco_metrics['AP75'], epoch)
+        writer.add_scalar('COCO/AR100', coco_metrics['AR100'], epoch)
+        
         writer.add_scalar('Learning_rate', optimizer.param_groups[0]['lr'], epoch)
         
-        log.info(f'Epoch {epoch+1}/{cfg.training.num_epochs}: '
-                f'Train Loss: {train_metrics["loss"]:.4f}, '
-                f'Val Loss: {val_loss:.4f}, '
-                f'LR: {optimizer.param_groups[0]["lr"]:.6f}')
+        log.info(f'Epoch {epoch+1}/{cfg.training.num_epochs}:')
+        log.info(f'  Train Loss: {train_metrics["loss"]:.4f} | Val Loss: {val_loss:.4f}')
+        log.info(f'  AP: {coco_metrics["AP"]:.4f} | AP50: {coco_metrics["AP50"]:.4f} | AP75: {coco_metrics["AP75"]:.4f}')
+        log.info(f'  LR: {optimizer.param_groups[0]["lr"]:.6f}')
         
         # PyTorch reference: Step scheduler per-epoch (after validation)
         scheduler.step()
         
-        # Save checkpoint if best
-        if val_loss < best_val_loss:
-            best_val_loss = val_loss
+        # Save checkpoint if best mAP (following torchvision's approach of using AP for model selection)
+        current_map = coco_metrics['AP']  # AP @ IoU=0.50:0.95
+        
+        if current_map > best_map:
+            best_map = current_map
+            best_map50 = coco_metrics['AP50']
             checkpoint_path = Path(cfg.logging.save_dir) / 'best_model.pth'
             
             checkpoint_dict = {
@@ -355,16 +498,22 @@ def main(cfg: DictConfig):
                 'optimizer_state_dict': optimizer.state_dict(),
                 'scheduler_state_dict': scheduler.state_dict(),
                 'val_loss': val_loss,
+                'coco_metrics': coco_metrics,
+                'best_map': best_map,
+                'best_map50': best_map50,
             }
             
             if model_ema is not None:
                 checkpoint_dict['model_ema_state_dict'] = model_ema.state_dict()
             
             torch.save(checkpoint_dict, checkpoint_path)
-            log.info(f'Saved best model to {checkpoint_path}')
+            log.info(f'✓ New best model! AP: {best_map:.4f} (AP50: {best_map50:.4f}) - Saved to {checkpoint_path}')
             patience_counter = 0
         else:
             patience_counter += 1
+            log.info(f'  No improvement (best AP: {best_map:.4f}), patience: {patience_counter}/{cfg.training.early_stopping_patience}')
+        
+        log.info("=" * 80)
         
         # Early stopping
         if patience_counter >= cfg.training.early_stopping_patience:
@@ -372,13 +521,14 @@ def main(cfg: DictConfig):
             break
     
     writer.close()
-    log.info(f"Training complete. Best validation loss: {best_val_loss:.4f}")
+    log.info("Training complete!")
+    log.info(f"Best mAP: {best_map:.4f} (AP50: {best_map50:.4f})")
     
     # Cleanup for Optuna
     gc.collect()
     torch.cuda.empty_cache()
     
-    return best_val_loss
+    return best_map  # Return mAP instead of loss for hyperparameter optimization
 
 
 if __name__ == "__main__":
