@@ -2,9 +2,14 @@
   name: ssdlite
   device: cuda
   num_classes: 1  # Will be auto-updated based on dataset (number of classes discovered)
+  
+  # Pretrained weights: Use COCO pretrained weights for transfer learning
+  # pretrained: false - Train from scratch, dataset Resize transforms REQUIRED
+  # pretrained: true  - Use COCO weights, model expects 320x320 (matches input_size ✓)
   pretrained: true
+  
   transform:
-    input_size: [320, 320] 
+    input_size: [320, 320]  # Matches COCO pretrained model size (good!)
     image_mean: [0.485, 0.456, 0.406]  # ImageNet RGB stats
     image_std: [0.229, 0.224, 0.225] 
   backbone: mobilenet_v3_large

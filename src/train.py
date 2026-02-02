@@ -187,16 +187,37 @@ def evaluate_coco(model, data_loader, device, coco_gt):
             outputs = model(images)
             
             # Process each image's predictions
-            for target, output in zip(targets, outputs):
+            for img_idx, (target, output) in enumerate(zip(targets, outputs)):
                 image_id = target['image_id'].item()
                 
                 if len(output['boxes']) == 0:
                     continue
                 
-                # Convert boxes from [x1,y1,x2,y2] to COCO format [x,y,w,h]
-                boxes = convert_to_xywh(output['boxes']).cpu()
+                # Get boxes (currently in transformed image coordinates)
+                boxes = output['boxes'].cpu()
                 scores = output['scores'].cpu()
                 labels = output['labels'].cpu()
+                
+                # Scale boxes back to original image dimensions
+                # Model returns boxes in the coordinate system of images passed to it
+                # But COCO ground truth is in original image coordinates
+                if 'orig_size' in target:
+                    orig_size = target['orig_size']
+                    orig_h = orig_size[0].item() if torch.is_tensor(orig_size[0]) else orig_size[0]
+                    orig_w = orig_size[1].item() if torch.is_tensor(orig_size[1]) else orig_size[1]
+                    
+                    # Current image dimensions (after dataset transform)
+                    curr_h, curr_w = images[img_idx].shape[-2:]
+                    
+                    # Scale boxes to original coordinates
+                    scale_h = orig_h / curr_h
+                    scale_w = orig_w / curr_w
+                    boxes = boxes.clone()  # Don't modify original
+                    boxes[:, [0, 2]] *= scale_w  # x coordinates
+                    boxes[:, [1, 3]] *= scale_h  # y coordinates
+                
+                # Convert boxes from [x1,y1,x2,y2] to COCO format [x,y,w,h]
+                boxes = convert_to_xywh(boxes)
                 
                 # Add all detections for this image
                 for box, score, label in zip(boxes, scores, labels):
@@ -207,7 +228,10 @@ def evaluate_coco(model, data_loader, device, coco_gt):
                         'score': score.item(),
                     })
     
-    # If no predictions, return zeros
+    # Debug information about predictions
+    log.info(f"Total predictions collected: {len(coco_results)}")
+    log.info("Note: Predictions scaled back to original image coordinates for COCO eval")
+    
     if len(coco_results) == 0:
         log.warning("No predictions made during COCO evaluation!")
         return {
@@ -224,6 +248,26 @@ def evaluate_coco(model, data_loader, device, coco_gt):
             'ARm': 0.0,
             'ARl': 0.0,
         }
+    
+    # Debug: Check prediction details
+    pred_image_ids = set(r['image_id'] for r in coco_results)
+    pred_cat_ids = set(r['category_id'] for r in coco_results)
+    gt_image_ids = set(coco_gt.imgs.keys())
+    gt_cat_ids = set(coco_gt.cats.keys())
+    
+    log.info(f"Prediction image IDs: {len(pred_image_ids)} unique ({list(pred_image_ids)[:5]}...)")
+    log.info(f"Ground truth image IDs: {len(gt_image_ids)} unique ({list(gt_image_ids)[:5]}...)")
+    log.info(f"Prediction category IDs: {pred_cat_ids}")
+    log.info(f"Ground truth category IDs: {gt_cat_ids}")
+    
+    matching_img_ids = pred_image_ids.intersection(gt_image_ids)
+    matching_cat_ids = pred_cat_ids.intersection(gt_cat_ids)
+    log.info(f"Matching image IDs: {len(matching_img_ids)}")
+    log.info(f"Matching category IDs: {matching_cat_ids}")
+    
+    # Sample some predictions
+    scores = [r['score'] for r in coco_results]
+    log.info(f"Score range: min={min(scores):.4f}, max={max(scores):.4f}, mean={sum(scores)/len(scores):.4f}")
     
     # Run COCO evaluation
     with redirect_stdout(io.StringIO()):
@@ -327,9 +371,17 @@ def main(cfg: DictConfig):
     cfg.model.num_classes = len(classes)
     log.info(f"Training with {cfg.model.num_classes} classes: {classes}")
     
-    # Build transforms
+    # Build transforms - always use config transforms
     train_transform = DetectionTransform(cfg.dataset.transform.train) if cfg.dataset.transform.train else None
     val_transform = DetectionTransform(cfg.dataset.transform.val) if cfg.dataset.transform.val else None
+    
+    # Info about resize behavior
+    if cfg.model.get('pretrained', False):
+        log.info("=" * 80)
+        log.info(f"PRETRAINED MODEL: Using {cfg.model.name} with COCO weights")
+        log.info(f"Config resize size: {cfg.model.transform.input_size}")
+        log.info("Both dataset and model will resize to this size (redundant but safe)")
+        log.info("=" * 80)
     
     # Create datasets
     train_dataset = ViamDataset(

@@ -27,12 +27,11 @@ class FasterRCNNDetector(nn.Module):
             from torchvision.models.detection import fasterrcnn_mobilenet_v3_large_fpn
             self.model = fasterrcnn_mobilenet_v3_large_fpn(weights=weights)
             
-            # Store preprocessing transform from pretrained weights
-            self.weights = weights
-            self.preprocess_transform = weights.transforms()
-            
             log.info("Loaded Faster R-CNN with COCO_V1 pretrained weights")
+            log.info("Model's built-in transform: min_size=800, max_size=1333")
             log.info(f"Using normalization from weights - mean: {self.model.transform.image_mean}, std: {self.model.transform.image_std}")
+            log.warning("⚠️  When using pretrained weights, the model's built-in transform will handle resizing.")
+            log.warning("⚠️  Remove 'Resize' from your config transforms to avoid double-resizing!")
             
             # Update num_classes if different from COCO (91 classes)
             if cfg.model.num_classes != 90:  # 90 classes + 1 background
@@ -63,9 +62,6 @@ class FasterRCNNDetector(nn.Module):
                     box_nms_thresh=0.5,
             )
             
-            self.weights = None
-            self.preprocess_transform = None
-            
             # Use custom transform from config
             self.model.transform = GeneralizedRCNNTransform(
                 min_size=input_h,
@@ -74,6 +70,7 @@ class FasterRCNNDetector(nn.Module):
                 image_std=cfg.model.transform.get('image_std', [0.229, 0.224, 0.225])
             )
             log.info(f"Training from scratch with custom transform - mean: {self.model.transform.image_mean}, std: {self.model.transform.image_std}")
+            log.info("✓ Config transforms (including Resize) will be applied correctly.")
     
     def forward(self, data, targets=None):
         outputs = self.model(data, targets)

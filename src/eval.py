@@ -312,7 +312,7 @@ def main(cfg: DictConfig):
     
     if not checkpoint_path.exists():
         raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
-    checkpoint = torch.load(checkpoint_path, map_location=device)
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
     
     # Prefer EMA weights if available (better for evaluation)
     if 'model_ema_state_dict' in checkpoint:

@@ -23,18 +23,13 @@ class SSDLiteDetector(nn.Module):
             weights = SSDLite320_MobileNet_V3_Large_Weights.COCO_V1
             self.model = ssdlite320_mobilenet_v3_large(weights=weights)
             
-            # Store preprocessing transform from pretrained weights
-            # This ensures we use the EXACT same preprocessing the model was trained with
-            self.weights = weights
-            self.preprocess_transform = weights.transforms()
-            
             log.info("Loaded SSDLite with COCO_V1 pretrained weights")
+            log.info("Model's built-in transform: min_size=320, max_size=320")
             log.info(f"Using normalization from weights - mean: {self.model.transform.image_mean}, std: {self.model.transform.image_std}")
+            log.warning("⚠️  When using pretrained weights, the model's built-in transform will handle resizing.")
+            log.warning("⚠️  Remove 'Resize' from your config transforms to avoid double-resizing!")
         else:
-            weights = None
             self.model = ssdlite320_mobilenet_v3_large(weights=None)
-            self.weights = None
-            self.preprocess_transform = None
             
             # Only override transform if NOT using pretrained weights
             # When training from scratch, we can use custom normalization
@@ -45,6 +40,7 @@ class SSDLiteDetector(nn.Module):
                 image_std=cfg.model.transform.get('image_std', [0.229, 0.224, 0.225])
             )
             log.info(f"Training from scratch with custom transform - mean: {self.model.transform.image_mean}, std: {self.model.transform.image_std}")
+            log.info("✓ Config transforms (including Resize) will be applied correctly.")
 
         # Update classification head for custom number of classes if needed
         # Only modify if num_classes is different from default (91 classes in COCO)
