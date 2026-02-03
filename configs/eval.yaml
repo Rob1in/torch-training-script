@@ -1,0 +1,27 @@
+# Configuration for model evaluation
+# Usage: python src/eval.py dataset_dir=<dir> [run_dir=outputs/...] [other overrides]
+
+defaults:
+  - model: faster_rcnn  # Will be overridden by training config if run_dir is provided
+  - dataset: jsonl      # Will be overridden by training config if run_dir is provided
+  - _self_
+
+# Evaluation settings
+evaluation:
+  confidence_threshold: 0.7  # Threshold for visualization (not used for COCO metrics)
+
+# Dataset directory for evaluation (required, must be provided via CLI)
+dataset_dir: null
+
+# Run directory containing training config and checkpoint (required)
+# Loads training config from run_dir/.hydra/config.yaml
+# Auto-detects checkpoint from run_dir/best_model.pth if checkpoint_path not provided
+run_dir: null
+
+# Checkpoint path (optional, auto-detected from run_dir if not provided)
+# Can be a PyTorch checkpoint (.pth) or ONNX model (.onnx)
+checkpoint_path: null
+
+# Logging
+logging:
+  save_dir: ${hydra:runtime.output_dir}

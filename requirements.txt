@@ -17,6 +17,10 @@ tensorboard>=2.10.0
 pycocotools>=2.0.0
 matplotlib>=3.5.0
 
+# ONNX export dependencies
+onnx>=1.14.0
+onnxruntime>=1.15.0
+
 # Standard library dependencies (usually included, but listed for completeness)
 # json, os, logging, pathlib, typing, multiprocessing, gc, random - all stdlib
 

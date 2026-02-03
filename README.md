@@ -14,11 +14,14 @@ python src/train.py --config-name=train
 # Run training with custom parameters
 python src/train.py --config-name=train training.batch_size=16 training.num_epochs=50
 
+# Evaluate a trained model
+python src/eval.py dataset_dir=triangles_dataset_small run_dir=outputs/2026-01-31/20-15-26
+
+# Convert to ONNX for deployment (FasterRCNN only)
+bash convert_model.sh outputs/2026-01-31/20-15-26
+
 # Run hyperparameter optimization (requires: pip install -e ".[sweep]")
 python src/train.py --config-name=sweep --multirun
-
-# Evaluate a trained model (automatically loads training config and checkpoint)
-python src/eval.py +run_dir=outputs/2026-01-31/20-15-26
 ```
 
 ## Features
@@ -373,49 +376,72 @@ python src/train.py --config-name=sweep --multirun
 
 ## Evaluation
 
-### Recommended: Automatic Evaluation from Training Run
+The evaluation script (`src/eval.py`) evaluates trained models on test datasets and computes COCO metrics.
 
-The **easiest way** to evaluate a model is to point to its training output directory. This automatically loads the training config, model architecture, and checkpoint:
+### Basic Usage
+
+**Required arguments:**
+- `dataset_dir`: Directory containing `dataset.jsonl` and `data/` folder
+- `run_dir`: Training output directory (contains `.hydra/config.yaml` and `best_model.pth`)
 
 ```bash
-# Evaluate using the exact same config as training
-python src/eval.py +run_dir=outputs/2026-01-31/20-15-26
-
-# Override test dataset if needed
+# Evaluate a trained model
 python src/eval.py \
-    +run_dir=outputs/2026-01-31/20-15-26 \
-    dataset.data.test_jsonl=path/to/test.jsonl \
-    dataset.data.test_data_dir=path/to/test_images
+    dataset_dir=triangles_dataset_small \
+    run_dir=outputs/2026-01-31/20-15-26
 ```
 
 **What happens:**
-1. Loads training config from `run_dir/.hydra/config.yaml`
-2. Auto-detects checkpoint at `run_dir/best_model.pth`
-3. Uses **Model EMA weights** if available (better evaluation performance)
-4. Scales predictions back to **original image dimensions**
-5. Allows overriding test dataset paths via CLI
+1. Loads training config from `run_dir/.hydra/config.yaml` (preserves model architecture, classes, etc.)
+2. Auto-detects checkpoint at `run_dir/best_model.pth` (or use `checkpoint_path` to override)
+3. Loads test dataset from `dataset_dir/dataset.jsonl` and `dataset_dir/data/`
+4. Uses **Model EMA weights** if available (better evaluation performance)
+5. Computes COCO metrics (mAP, AP50, AP75, etc.)
+6. Saves results to `run_dir/eval_<dataset_name>_<checkpoint_name>_<format>/`
 
-### Manual Evaluation (Old Method)
+### Using Custom Checkpoint Path
 
-If you need full control or want to use a checkpoint without a training directory:
+You can override the checkpoint path to evaluate ONNX models or custom checkpoints:
 
 ```bash
+# Evaluate an ONNX model
 python src/eval.py \
-    --config-name=train \
-    model=faster_rcnn \
-    dataset.data.test_jsonl=path/to/test.jsonl \
-    dataset.data.test_data_dir=path/to/images \
-    +checkpoint_path=path/to/model.pth
+    dataset_dir=triangles_dataset_small \
+    run_dir=outputs/2026-01-31/20-15-26 \
+    checkpoint_path=outputs/2026-01-31/20-15-26/onnx_model/model.onnx
+
+# Evaluate a specific checkpoint
+python src/eval.py \
+    dataset_dir=triangles_dataset_small \
+    run_dir=outputs/2026-01-31/20-15-26 \
+    checkpoint_path=outputs/2026-01-31/20-15-26/checkpoint_epoch_10.pth
 ```
 
 ### Evaluation Outputs
 
-Evaluation generates in `outputs/YYYY-MM-DD/HH-MM-SS/`:
-- **`{model}_predictions.json`** - COCO format predictions
-- **`{model}_metrics.json`** - mAP, AP50, AP75, etc.
-- **`ground_truth_coco.json`** - Auto-converted COCO format ground truth
-- **`visualizations/`** - 7 random images with predicted + ground truth boxes
-- **`eval.log`** - Detailed evaluation log
+Evaluation results are saved to:
+```
+run_dir/eval_<dataset_name>_<checkpoint_name>_<format>/
+```
+
+**Example:**
+```
+outputs/2026-01-31/20-15-26/
+└── eval_triangles_dataset_small_best_model_pth/
+    ├── faster_rcnn_predictions.json    # COCO format predictions
+    ├── faster_rcnn_metrics.json        # mAP, AP50, AP75, etc.
+    ├── ground_truth_coco.json         # Auto-converted COCO format ground truth
+    └── visualizations/                 # Random images with predicted + ground truth boxes
+        ├── 0000_detected.png
+        ├── 0001_detected.png
+        └── ...
+```
+
+**Output files:**
+- **`{model}_predictions.json`** - Predictions in COCO format
+- **`{model}_metrics.json`** - COCO evaluation metrics (mAP, AP50, AP75, etc.)
+- **`ground_truth_coco.json`** - Ground truth converted to COCO format
+- **`visualizations/`** - Sample images with predicted and ground truth bounding boxes
 
 ### COCO Metrics Explained
 
@@ -431,6 +457,42 @@ The evaluation script reports:
 2. Scales predictions to original image dimensions
 3. Evaluates using pycocotools
 4. Saves results and visualizations
+
+## ONNX Conversion
+
+After training and evaluating your model, convert it to ONNX format for production deployment:
+
+```bash
+# Convert trained model to ONNX (FasterRCNN only)
+bash convert_model.sh outputs/2026-02-02/15-15-47
+```
+
+**What this does:**
+1. Converts PyTorch model to ONNX format with uint8 input support
+2. Runs internal consistency tests (PyTorch vs ONNX)
+3. Tests on first 5 images from training dataset
+4. Saves everything to `outputs/2026-02-02/15-15-47/onnx_model/`
+
+**Output structure:**
+```
+outputs/2026-02-02/15-15-47/onnx_model/
+├── model.onnx                 # ONNX model (ready for deployment)
+├── conversion_summary.txt     # Conversion details
+└── test_results/              # Visualizations of test inferences
+    ├── 0000_detected.png
+    └── ...
+```
+
+**ONNX Model Specifications:**
+- **Input**: `image` - uint8 tensor `[batch_size, 3, H, W]` with values 0-255
+- **Outputs**:
+  - `location`: Bounding boxes `[batch_size, max_detections, 4]` in (x1, y1, x2, y2) format
+  - `score`: Confidence scores `[batch_size, max_detections]`
+  - `category`: Class labels `[batch_size, max_detections]` (1-indexed)
+
+**Note**: Currently only **FasterRCNN** models are supported for ONNX export.
+
+For detailed usage and deployment examples, see `ONNX_QUICKSTART.md`.
 
 ## Project Structure
 
