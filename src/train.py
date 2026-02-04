@@ -315,14 +315,29 @@ def main(cfg: DictConfig):
     else:
         raise ValueError(f"Unknown optimizer: {cfg.training.optimizer}")
     
-    # Learning rate scheduler (PyTorch reference: MultiStepLR, stepped per-epoch)
-    scheduler = torch.optim.lr_scheduler.MultiStepLR(
-        optimizer,
-        milestones=cfg.training.lr_steps,
-        gamma=cfg.training.lr_gamma
-    )
+    # Learning rate scheduler
+    lr_scheduler_type = cfg.training.get('lr_scheduler', 'multisteplr').lower()
     
-    log.info(f"Scheduler: MultiStepLR (milestones={cfg.training.lr_steps}, gamma={cfg.training.lr_gamma})")
+    if lr_scheduler_type == 'multisteplr':
+        scheduler = torch.optim.lr_scheduler.MultiStepLR(
+            optimizer,
+            milestones=cfg.training.lr_steps,
+            gamma=cfg.training.lr_gamma
+        )
+        log.info(f"Scheduler: MultiStepLR (milestones={cfg.training.lr_steps}, gamma={cfg.training.lr_gamma})")
+    elif lr_scheduler_type in ['cosineannealinglr', 'cosine']:
+        # CosineAnnealingLR: T_max is number of epochs
+        T_max = cfg.training.num_epochs
+        eta_min = cfg.training.get('lr_eta_min', 0.0)
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer,
+            T_max=T_max,
+            eta_min=eta_min
+        )
+        log.info(f"Scheduler: CosineAnnealingLR (T_max={T_max}, eta_min={eta_min})")
+    else:
+        raise ValueError(f"Unknown lr_scheduler: {lr_scheduler_type}. Supported: multisteplr, cosineannealinglr")
+    
     log.info(f"Warmup: Will be applied in epoch 0 only ({cfg.training.get('warmup_iters', 1000)} iterations)")
     
     # Prepare COCO ground truth for validation evaluation
