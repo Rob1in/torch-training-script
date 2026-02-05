@@ -34,6 +34,9 @@ log = logging.getLogger(__name__)
 class ONNXModelWrapper:
     """Wrapper to make ONNX model behave like PyTorch model for evaluation.
     
+    Expects float32 input in [0, 1] range from the dataloader (no normalization).
+    Converts to uint8 [0, 255] for the ONNX model which handles normalization internally.
+    
     Note: ONNX models are typically exported with batch_size=1, so we process
     images one at a time to handle variable batch sizes from the DataLoader.
     """
@@ -51,13 +54,15 @@ class ONNXModelWrapper:
         self.session = ort.InferenceSession(onnx_path, providers=providers)
         self.device = device
         
-        # Get input shape info to understand batch size requirements
+        # Get input shape info
         input_info = self.session.get_inputs()[0]
         self.input_name = input_info.name
         input_shape = input_info.shape
+        
         log.info(f"Loaded ONNX model from: {onnx_path}")
         log.info(f"ONNX Runtime providers: {self.session.get_providers()}")
         log.info(f"ONNX input name: {self.input_name}, shape: {input_shape}")
+        log.info("ONNX model expects uint8 input [0, 255] (normalization handled by model's GeneralizedRCNNTransform)")
         
         # Check if model expects fixed batch size
         if len(input_shape) > 0 and isinstance(input_shape[0], int) and input_shape[0] > 0:
@@ -98,8 +103,10 @@ class ONNXModelWrapper:
             else:
                 img_batch = img
             
-            # Convert to numpy float32 (range [0, 1] as expected by model)
-            img_np = img_batch.cpu().numpy().astype(np.float32)
+            # Dataloader provides float32 [0, 1] (no normalization).
+            # Convert to uint8 [0, 255] for ONNX model.
+            # The model's built-in GeneralizedRCNNTransform handles normalization.
+            img_np = (img_batch.cpu().numpy() * 255).clip(0, 255).astype(np.uint8)
             
             # Run ONNX inference (expects batch_size=1)
             outputs = self.session.run(None, {self.input_name: img_np})
@@ -462,6 +469,20 @@ def main(cfg: DictConfig):
             model.load_state_dict(checkpoint['model_state_dict'])
 
     test_transform = build_transforms(cfg, is_train=False, test=True)
+
+    # Check if model has a built-in transform (normalization + resize).
+    # All torchvision detection models (Faster R-CNN, SSDLite) have GeneralizedRCNNTransform.
+    # If a model does NOT have a built-in transform, the dataloader must handle normalization.
+    has_builtin_transform = (
+        hasattr(model, 'model') and hasattr(model.model, 'transform')
+    ) or isinstance(model, ONNXModelWrapper)
+    
+    if has_builtin_transform:
+        log.info("Model has built-in transform (handles normalization internally)")
+        log.info("Dataloader should NOT include Normalize — only Resize and augmentations")
+    else:
+        log.warning("Model does NOT have a built-in transform.")
+        log.warning("Make sure your dataset config includes Normalize in the transforms!")
 
     # Set dataloader parameters
     num_workers = cfg.training.num_workers

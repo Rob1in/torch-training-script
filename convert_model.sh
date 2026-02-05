@@ -301,10 +301,10 @@ ONNX Model:
   Device used: $DEVICE
 
 Input Specification:
-  Name: input
-  Type: float32
-  Shape: [batch_size, 3, height, width]
-  Range: 0.0-1.0
+  Name: image
+  Type: uint8
+  Shape: [1, 3, height, width]
+  Range: 0-255 (raw pixel values, normalization handled internally)
 
 Output Specification:
   - location: [batch_size, N, 4] (float32, normalized 0-1)
@@ -339,14 +339,14 @@ Usage:
   import numpy as np
   from PIL import Image
   
-  # Load and preprocess image (float32, range [0, 1])
+  # Load image as uint8 (no normalization needed - model handles it internally)
   img = Image.open('image.jpg').convert('RGB')
-  img_tensor = np.array(img).astype(np.float32) / 255.0
-  img_tensor = img_tensor.transpose(2, 0, 1)  # HWC -> CHW
-  img_batch = img_tensor[np.newaxis, ...]  # Add batch dimension
+  img_np = np.array(img)  # [H, W, C], uint8
+  img_chw = img_np.transpose(2, 0, 1)  # [C, H, W], uint8
+  img_batch = img_chw[np.newaxis, ...]  # [1, C, H, W], uint8
   
   session = ort.InferenceSession("$ONNX_DIR/model.onnx")
-  outputs = session.run(None, {'input': img_batch})
+  outputs = session.run(None, {'image': img_batch})
   locations, scores, categories = outputs
 
 Deployment:

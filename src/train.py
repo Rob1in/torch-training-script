@@ -227,17 +227,20 @@ def main(cfg: DictConfig):
     cfg.model.num_classes = len(classes)
     log.info(f"Training with {cfg.model.num_classes} classes: {classes}")
     
-    # Build transforms - always use config transforms
+    # Build transforms - only Resize and augmentations, NOT Normalize.
+    # All torchvision detection models have a built-in GeneralizedRCNNTransform
+    # that handles normalization (and resize) internally in model.forward().
     train_transform = DetectionTransform(cfg.dataset.transform.train) if cfg.dataset.transform.train else None
     val_transform = DetectionTransform(cfg.dataset.transform.val) if cfg.dataset.transform.val else None
     
-    # Info about resize behavior
-    if cfg.model.get('pretrained', False):
-        log.info("=" * 80)
-        log.info(f"PRETRAINED MODEL: Using {cfg.model.name} with COCO weights")
-        log.info(f"Config resize size: {cfg.model.transform.input_size}")
-        log.info("Both dataset and model will resize to this size (redundant but safe)")
-        log.info("=" * 80)
+    # Warn if Normalize is accidentally included in transforms
+    for split_name, transform_cfg in [('train', cfg.dataset.transform.train), ('val', cfg.dataset.transform.val)]:
+        if transform_cfg:
+            for t in transform_cfg:
+                if t.get('name') == 'Normalize':
+                    log.warning(f"⚠️  '{split_name}' transforms contain Normalize!")
+                    log.warning("    The model's built-in transform already normalizes. This will cause DOUBLE normalization.")
+                    log.warning("    Remove Normalize from your dataset config transforms.")
     
     # Create datasets
     train_dataset = ViamDataset(
