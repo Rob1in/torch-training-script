@@ -106,6 +106,10 @@ class ViamDataset(Dataset):
         
         log.info(f"Loaded {len(self.samples)} images with annotations from specified classes")
     
+    def get_classes(self) -> List[str]:
+        """Return sorted list of class names."""
+        return sorted(self.label_to_id.keys())
+    
     def __len__(self):
         return len(self.samples)
     

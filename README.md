@@ -123,17 +123,16 @@ The `classes` configuration:
 
 ### Dataset Paths
 
-Configure dataset paths in `configs/dataset/jsonl.yaml`:
+Configure dataset paths in `configs/dataset/jsonl.yaml`. Each directory must contain a `dataset.jsonl` file and a `data/` subdirectory with images:
 
 ```yaml
 data:
-  train_jsonl: dataset.jsonl
-  train_data_dir: data
-  val_jsonl: dataset.jsonl
-  val_data_dir: data
-  test_jsonl: dataset.jsonl
-  test_data_dir: data
+  train_dir: path/to/my_dataset   # Required: contains dataset.jsonl + data/
+  val_dir: null                    # Optional: if null, auto-split from train_dir
+  test_dir: null                   # Optional: for eval.py
 ```
+
+When `val_dir` is not set, the training data is automatically split into train/val using `training.val_split` (default: 0.2).
 
 ### Model Selection
 

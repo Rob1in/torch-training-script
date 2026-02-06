@@ -1,15 +1,17 @@
 name: jsonl
 
 # Dataset paths
-# Update these paths to point to your dataset location
+# Each directory must contain: dataset.jsonl + data/ (with images)
+# Example structure:
+#   my_dataset/
+#     dataset.jsonl
+#     data/
+#       image1.jpg
+#       image2.jpg
 data:
-  train_jsonl: path/to/dataset.jsonl  # Path to training JSONL file
-  train_data_dir: path/to/data  # Directory containing training images
-  val_jsonl: path/to/dataset.jsonl  # Path to validation JSONL file (can be same file with split)
-  val_data_dir: path/to/data  # Directory containing validation images
-  test_jsonl: path/to/dataset.jsonl  # Path to test JSONL file
-  test_data_dir: path/to/data  # Directory containing test images
-  # test_annotations_coco: path/to/annotations.json  # Optional: Pre-converted COCO format ground truth
+  train_dir: null   # Required: directory containing dataset.jsonl + data/
+  val_dir: null     # Optional: if null, auto-split from train_dir (see training.val_split)
+  test_dir: null    # Optional: for eval.py (eval.py uses dataset_dir CLI arg instead)
 
 # Transform configuration
 # Note: Transforms are applied via GPUCollate in the dataloader BEFORE model.forward()

@@ -57,6 +57,9 @@ training:
   warmup_iters: 1000  # Number of iterations for warmup in first epoch
   warmup_factor: 0.001  # Start at 0.1% of base LR (1/1000)
   
+  # Validation split (used when dataset.data.val_dir is not set)
+  val_split: 0.2  # Fraction of training data used for validation when val_dir is null
+  
   # Training settings
   gradient_clip: 0.0  # Max gradient norm (0 to disable, PyTorch reference doesn't use it)
   early_stopping_patience: 15

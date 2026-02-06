@@ -10,14 +10,14 @@ import torch
 import torch.multiprocessing as mp
 from omegaconf import DictConfig, OmegaConf
 from pycocotools.coco import COCO
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, random_split
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
 from datasets.viam_dataset import ViamDataset
 from models.faster_rcnn_detector import FasterRCNNDetector
 from models.ssdlite_detector import SSDLiteDetector
-from utils.coco_converter import jsonl_to_coco
+from utils.coco_converter import dataset_to_coco, jsonl_to_coco
 from utils.coco_eval import evaluate_coco
 from utils.freeze import configure_model_for_transfer_learning
 from utils.model_ema import ModelEMA
@@ -165,19 +165,46 @@ def main(cfg: DictConfig):
     log.info(f"check device: {torch.cuda.is_available()}")
     log.info(f"config:\n{OmegaConf.to_yaml(cfg)}")
     
-    # Resolve data paths relative to original working directory
+    # Resolve data directory paths relative to original working directory
     # (Hydra changes CWD to output dir, so relative paths in config would break)
     from hydra.utils import get_original_cwd
     original_cwd = Path(get_original_cwd())
     
     OmegaConf.set_struct(cfg, False)
-    for key in ['train_jsonl', 'val_jsonl', 'test_jsonl', 'train_data_dir', 'val_data_dir', 'test_data_dir']:
+    for key in ['train_dir', 'val_dir', 'test_dir']:
         val = cfg.dataset.data.get(key)
         if val and not Path(val).is_absolute():
             resolved = str(original_cwd / val)
             cfg.dataset.data[key] = resolved
             log.info(f"Resolved {key}: {val} -> {resolved}")
     OmegaConf.set_struct(cfg, True)
+    
+    # Derive jsonl_path and data_dir from each directory
+    # Convention: <dir>/dataset.jsonl and <dir>/data/
+    train_dir = Path(cfg.dataset.data.train_dir)
+    if not train_dir.exists():
+        raise FileNotFoundError(f"Training directory not found: {train_dir}")
+    train_jsonl = train_dir / "dataset.jsonl"
+    train_data_dir = train_dir / "data"
+    if not train_jsonl.exists():
+        raise FileNotFoundError(f"dataset.jsonl not found in {train_dir}")
+    if not train_data_dir.exists():
+        raise FileNotFoundError(f"data/ directory not found in {train_dir}")
+    
+    val_dir_str = cfg.dataset.data.get('val_dir')
+    has_separate_val = val_dir_str is not None
+    val_jsonl = None
+    val_data_dir = None
+    if has_separate_val:
+        val_dir = Path(val_dir_str)
+        if not val_dir.exists():
+            raise FileNotFoundError(f"Validation directory not found: {val_dir}")
+        val_jsonl = val_dir / "dataset.jsonl"
+        val_data_dir = val_dir / "data"
+        if not val_jsonl.exists():
+            raise FileNotFoundError(f"dataset.jsonl not found in {val_dir}")
+        if not val_data_dir.exists():
+            raise FileNotFoundError(f"data/ directory not found in {val_dir}")
     
     # Set random seed for reproducibility
     set_seed(cfg.experiment.seed)
@@ -204,8 +231,8 @@ def main(cfg: DictConfig):
     if classes is None:
         log.info("No classes specified in config. Auto-discovering from training data...")
         temp_dataset = ViamDataset(
-            jsonl_path=cfg.dataset.data.train_jsonl,
-            data_dir=cfg.dataset.data.train_data_dir,
+            jsonl_path=str(train_jsonl),
+            data_dir=str(train_data_dir),
             classes=None,
             transform=None
         )
@@ -258,19 +285,58 @@ def main(cfg: DictConfig):
     val_transform = DetectionTransform(cfg.dataset.transform.val) if cfg.dataset.transform.val else None
     
     # Create datasets
-    train_dataset = ViamDataset(
-        jsonl_path=cfg.dataset.data.train_jsonl,
-        data_dir=cfg.dataset.data.train_data_dir,
-        classes=classes,
-        transform=None  # Transform applied in collate_fn
-    )
+    # When val_dir is provided: separate train and val ViamDatasets
+    # When val_dir is null: single ViamDataset, auto-split into train/val subsets
+    val_indices = None  # Will be set if auto-splitting
     
-    val_dataset = ViamDataset(
-        jsonl_path=cfg.dataset.data.val_jsonl,
-        data_dir=cfg.dataset.data.val_data_dir,
-        classes=classes,
-        transform=None  # Transform applied in collate_fn
-    )
+    if has_separate_val:
+        # Separate validation directory provided
+        log.info(f"Using separate validation dataset from: {val_dir_str}")
+        train_dataset = ViamDataset(
+            jsonl_path=str(train_jsonl),
+            data_dir=str(train_data_dir),
+            classes=classes,
+            transform=None  # Transform applied in collate_fn
+        )
+        val_dataset = ViamDataset(
+            jsonl_path=str(val_jsonl),
+            data_dir=str(val_data_dir),
+            classes=classes,
+            transform=None  # Transform applied in collate_fn
+        )
+        # Store full dataset reference for COCO GT (used when auto-splitting)
+        full_dataset = None
+    else:
+        # Auto-split: create one dataset and split into train/val
+        val_split = cfg.training.get('val_split', 0.2)
+        log.info(f"No val_dir provided. Auto-splitting training data with val_split={val_split}")
+        
+        full_dataset = ViamDataset(
+            jsonl_path=str(train_jsonl),
+            data_dir=str(train_data_dir),
+            classes=classes,
+            transform=None  # Transform applied in collate_fn
+        )
+        
+        total_size = len(full_dataset)
+        val_size = int(total_size * val_split)
+        train_size = total_size - val_size
+        
+        if val_size == 0:
+            raise ValueError(
+                f"val_split={val_split} results in 0 validation samples "
+                f"(total={total_size}). Increase val_split or provide a val_dir."
+            )
+        
+        # Use seeded generator for reproducible splits
+        split_generator = torch.Generator().manual_seed(cfg.experiment.seed)
+        train_dataset, val_dataset = random_split(
+            full_dataset, [train_size, val_size], generator=split_generator
+        )
+        # Store val indices for COCO GT generation
+        val_indices = val_dataset.indices
+        
+        log.info(f"Auto-split: {train_size} train / {val_size} val samples (from {total_size} total)")
     
     # Create dataloaders
     # PyTorch reference: batch_size per GPU, we're using 1 GPU
@@ -361,12 +427,22 @@ def main(cfg: DictConfig):
     # Prepare COCO ground truth for validation evaluation
     log.info("Preparing COCO ground truth for validation...")
     val_coco_path = Path(cfg.logging.save_dir) / 'val_ground_truth_coco.json'
-    jsonl_to_coco(
-        jsonl_path=cfg.dataset.data.val_jsonl,
-        data_dir=cfg.dataset.data.val_data_dir,
-        output_path=val_coco_path,
-        classes=classes,
-    )
+    
+    if val_indices is not None:
+        # Auto-split case: generate COCO GT from the val subset of the full dataset
+        dataset_to_coco(
+            dataset=full_dataset,
+            indices=list(val_indices),
+            output_path=val_coco_path,
+        )
+    else:
+        # Separate val_dir: generate COCO GT from the val JSONL file
+        jsonl_to_coco(
+            jsonl_path=str(val_jsonl),
+            data_dir=str(val_data_dir),
+            output_path=val_coco_path,
+            classes=classes,
+        )
     coco_gt = COCO(str(val_coco_path))
     log.info(f"COCO ground truth created: {len(coco_gt.imgs)} images, {len(coco_gt.anns)} annotations")
     
