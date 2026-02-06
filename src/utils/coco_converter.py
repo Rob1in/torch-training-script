@@ -99,8 +99,12 @@ def jsonl_to_coco(
             
             # Resolve image path (same logic as ViamDataset)
             import os
-            if os.path.isabs(image_path) or image_path.startswith(data_dir.name + '/'):
+            if os.path.isabs(image_path):
                 full_path = Path(image_path)
+            elif image_path.startswith(data_dir.name + '/'):
+                # image_path is like "dataset_dir_name/data/file.jpg"
+                # Resolve relative to data_dir's parent so it becomes an absolute path
+                full_path = data_dir.parent / image_path
             else:
                 full_path = data_dir / os.path.basename(image_path)
             
@@ -122,10 +126,7 @@ def jsonl_to_coco(
             
             # Add image entry
             # Use relative path if possible, otherwise just filename
-            if not os.path.isabs(image_path) and not image_path.startswith(data_dir.name + '/'):
-                file_name = os.path.basename(image_path)
-            else:
-                file_name = Path(image_path).name
+            file_name = Path(image_path).name
             
             coco_data["images"].append({
                 "id": image_id,

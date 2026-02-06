@@ -165,6 +165,20 @@ def main(cfg: DictConfig):
     log.info(f"check device: {torch.cuda.is_available()}")
     log.info(f"config:\n{OmegaConf.to_yaml(cfg)}")
     
+    # Resolve data paths relative to original working directory
+    # (Hydra changes CWD to output dir, so relative paths in config would break)
+    from hydra.utils import get_original_cwd
+    original_cwd = Path(get_original_cwd())
+    
+    OmegaConf.set_struct(cfg, False)
+    for key in ['train_jsonl', 'val_jsonl', 'test_jsonl', 'train_data_dir', 'val_data_dir', 'test_data_dir']:
+        val = cfg.dataset.data.get(key)
+        if val and not Path(val).is_absolute():
+            resolved = str(original_cwd / val)
+            cfg.dataset.data[key] = resolved
+            log.info(f"Resolved {key}: {val} -> {resolved}")
+    OmegaConf.set_struct(cfg, True)
+    
     # Set random seed for reproducibility
     set_seed(cfg.experiment.seed)
     log.info(f"Set random seed to {cfg.experiment.seed} for reproducibility")
@@ -185,7 +199,23 @@ def main(cfg: DictConfig):
     
     log.info(f"Using device: {device}")
     
-    # Create model
+    # Determine classes BEFORE model creation (model needs correct num_classes)
+    classes = cfg.get('classes', None)
+    if classes is None:
+        log.info("No classes specified in config. Auto-discovering from training data...")
+        temp_dataset = ViamDataset(
+            jsonl_path=cfg.dataset.data.train_jsonl,
+            data_dir=cfg.dataset.data.train_data_dir,
+            classes=None,
+            transform=None
+        )
+        classes = temp_dataset.get_classes()
+        log.info(f"Auto-discovered {len(classes)} classes: {classes}")
+    
+    cfg.model.num_classes = len(classes)
+    log.info(f"Training with {cfg.model.num_classes} classes: {classes}")
+    
+    # Create model (now with correct num_classes)
     if cfg.model.name == "faster_rcnn":
         model = FasterRCNNDetector(cfg).to(device)
         log.info("faster rcnn model created and moved to device")
@@ -210,22 +240,6 @@ def main(cfg: DictConfig):
         ema_decay = cfg.training.get('ema_decay', 0.9998)
         model_ema = ModelEMA(model, decay=ema_decay, device=device)
         log.info(f"Created Model EMA with decay={ema_decay}")
-    
-    # Determine classes
-    classes = cfg.get('classes', None)
-    if classes is None:
-        log.info("No classes specified in config. Auto-discovering from training data...")
-        temp_dataset = ViamDataset(
-            jsonl_path=cfg.dataset.data.train_jsonl,
-            data_dir=cfg.dataset.data.train_data_dir,
-            classes=None,
-            transform=None
-        )
-        classes = temp_dataset.get_classes()
-        log.info(f"Auto-discovered {len(classes)} classes: {classes}")
-    
-    cfg.model.num_classes = len(classes)
-    log.info(f"Training with {cfg.model.num_classes} classes: {classes}")
     
     # Build transforms - only Resize and augmentations, NOT Normalize.
     # All torchvision detection models have a built-in GeneralizedRCNNTransform

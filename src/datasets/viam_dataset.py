@@ -114,10 +114,12 @@ class ViamDataset(Dataset):
         image_path = sample['image_path']
         
         # Resolve image path
-        # If image_path is absolute or starts with dataset prefix, use as-is
-        # Otherwise, join with data_dir
-        if os.path.isabs(image_path) or image_path.startswith(self.data_dir.name + '/'):
+        if os.path.isabs(image_path):
             full_path = Path(image_path)
+        elif image_path.startswith(self.data_dir.name + '/'):
+            # image_path is like "dataset_dir_name/data/file.jpg"
+            # Resolve relative to data_dir's parent so it becomes an absolute path
+            full_path = self.data_dir.parent / image_path
         else:
             full_path = self.data_dir / os.path.basename(image_path)
         
