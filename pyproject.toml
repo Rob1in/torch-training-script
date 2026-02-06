@@ -60,6 +60,16 @@ sweep = [
     "hydra-optuna-sweeper>=1.2.0",
 ]
 
+# ONNX Vision Service module (lightweight, no PyTorch)
+vision-service = [
+    "viam-sdk>=0.24.0",
+    "onnxruntime>=1.16.0",
+    "numpy>=1.21.0",
+    "pillow>=9.0.0",
+    "pyinstaller>=6.0.0",
+    "google-api-python-client",
+]
+
 # Development dependencies
 dev = [
     "pytest>=7.0.0",
