@@ -29,7 +29,6 @@ import numpy as np
 import onnxruntime as ort
 from PIL import Image
 from typing_extensions import Self
-
 from viam.components.camera import Camera
 from viam.logging import getLogger
 from viam.media.video import ViamImage
@@ -39,7 +38,7 @@ from viam.proto.common import PointCloudObject, ResourceName
 from viam.proto.service.vision import Classification, Detection
 from viam.resource.base import ResourceBase
 from viam.resource.types import Model, ModelFamily
-from viam.services.vision import Vision, CaptureAllResult
+from viam.services.vision import CaptureAllResult, Vision
 from viam.utils import ValueTypes
 
 from src.onnx_vision_service.utils import decode_image

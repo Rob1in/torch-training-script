@@ -31,6 +31,7 @@ experiment:
 # If None, classes will be auto-discovered from all annotation labels in the dataset
 classes:
   - triangle
+  - triangle_inverted
   
 # Training configuration using pre-computed optimization results
 training:

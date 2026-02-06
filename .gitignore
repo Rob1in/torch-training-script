@@ -12,6 +12,7 @@ build/
 
 # Virtual Environment
 .venv/
+.venv-vision-service/
 venv/
 ENV/
 env/
