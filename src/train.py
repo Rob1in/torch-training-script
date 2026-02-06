@@ -230,17 +230,18 @@ def main(cfg: DictConfig):
     # Build transforms - only Resize and augmentations, NOT Normalize.
     # All torchvision detection models have a built-in GeneralizedRCNNTransform
     # that handles normalization (and resize) internally in model.forward().
+    for split_name in ['train', 'val']:
+        transform_cfg = cfg.dataset.transform[split_name]
+        if transform_cfg and any(t.get('name') == 'Normalize' for t in transform_cfg):
+            log.warning("=" * 80)
+            log.warning(f"⚠️  Normalize found in '{split_name}' transforms!")
+            log.warning("    The model's built-in GeneralizedRCNNTransform already normalizes.")
+            log.warning("    This will cause DOUBLE NORMALIZATION and broken results.")
+            log.warning("    Remove Normalize from configs/dataset/jsonl.yaml")
+            log.warning("=" * 80)
+    
     train_transform = DetectionTransform(cfg.dataset.transform.train) if cfg.dataset.transform.train else None
     val_transform = DetectionTransform(cfg.dataset.transform.val) if cfg.dataset.transform.val else None
-    
-    # Warn if Normalize is accidentally included in transforms
-    for split_name, transform_cfg in [('train', cfg.dataset.transform.train), ('val', cfg.dataset.transform.val)]:
-        if transform_cfg:
-            for t in transform_cfg:
-                if t.get('name') == 'Normalize':
-                    log.warning(f"⚠️  '{split_name}' transforms contain Normalize!")
-                    log.warning("    The model's built-in transform already normalizes. This will cause DOUBLE normalization.")
-                    log.warning("    Remove Normalize from your dataset config transforms.")
     
     # Create datasets
     train_dataset = ViamDataset(
