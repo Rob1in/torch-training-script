@@ -468,21 +468,26 @@ def main(cfg: DictConfig):
             log.info("Loading standard model weights for evaluation")
             model.load_state_dict(checkpoint['model_state_dict'])
 
-    test_transform = build_transforms(cfg, is_train=False, test=True)
-
     # Check if model has a built-in transform (normalization + resize).
     # All torchvision detection models (Faster R-CNN, SSDLite) have GeneralizedRCNNTransform.
-    # If a model does NOT have a built-in transform, the dataloader must handle normalization.
     has_builtin_transform = (
         hasattr(model, 'model') and hasattr(model.model, 'transform')
     ) or isinstance(model, ONNXModelWrapper)
     
     if has_builtin_transform:
-        log.info("Model has built-in transform (handles normalization internally)")
-        log.info("Dataloader should NOT include Normalize — only Resize and augmentations")
+        # Warn if Normalize is in the transforms — it would cause double normalization
+        test_transforms_cfg = cfg.dataset.transform.test
+        if test_transforms_cfg and any(t.get('name') == 'Normalize' for t in test_transforms_cfg):
+            log.warning("=" * 80)
+            log.warning("⚠️  Normalize found in dataset transforms, but model has a built-in transform!")
+            log.warning("    This will cause DOUBLE NORMALIZATION and broken results.")
+            log.warning("    Remove Normalize from configs/dataset/jsonl.yaml")
+            log.warning("=" * 80)
     else:
         log.warning("Model does NOT have a built-in transform.")
         log.warning("Make sure your dataset config includes Normalize in the transforms!")
+
+    test_transform = build_transforms(cfg, is_train=False, test=True)
 
     # Set dataloader parameters
     num_workers = cfg.training.num_workers
