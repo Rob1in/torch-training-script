@@ -543,6 +543,7 @@ def main(cfg: DictConfig):
     writer.close()
     log.info("Training complete!")
     log.info(f"Best mAP: {best_map:.4f} (AP50: {best_map50:.4f})")
+    log.info(f"Results and model available in run directory: {cfg.logging.save_dir}")
     
     # Cleanup for Optuna
     gc.collect()
