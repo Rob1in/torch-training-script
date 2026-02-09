@@ -221,6 +221,11 @@ def main():
     input_h, input_w = cfg.model.transform.input_size
     log.info(f"Using input size from config: {input_h}x{input_w}")
     
+    # num_classes is computed at runtime from the 'classes' list in the saved Hydra config
+    classes = list(cfg.classes)
+    cfg.model.num_classes = len(classes)
+    log.info(f"num_classes={len(classes)} (classes: {classes})")
+    
     # Load model first (needed to find an image with detections when using dataset-dir)
     log.info(f"Loading model from {args.checkpoint}")
     detector = FasterRCNNDetector(cfg)
