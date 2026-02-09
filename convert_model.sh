@@ -362,6 +362,7 @@ echo "Output directory: $ONNX_DIR"
 echo ""
 echo "Contents:"
 echo "  - model.onnx              : ONNX model file"
+echo "  - labels.txt              : Class labels for Viam Vision Service"
 echo "  - conversion_summary.txt  : This summary"
 if [ "$EVALUATE_CONVERTED_MODEL" = true ]; then
     echo "  Evaluation results saved to: $ONNX_EVAL_DIR"

@@ -327,9 +327,17 @@ def main():
     else:
         log.warning(f"⚠️  ONNX ({onnx_confident}) produced detections but PyTorch ({pytorch_detections}) did not. Unexpected.")
     
+    # Write labels.txt for Viam (one label per line, same order as training)
+    labels_path = Path(args.output).parent / "labels.txt"
+    with open(labels_path, 'w') as f:
+        for label in classes:
+            f.write(f"{label}\n")
+    log.info(f"✓ Labels file written: {labels_path} ({len(classes)} classes)")
+    
     log.info("\n" + ("=" * 70))
     log.info("✅ SUCCESS! ONNX model created and verified")
     log.info(f"   ONNX model: {args.output}")
+    log.info(f"   Labels: {labels_path}")
     log.info(f"   Size: {size_mb:.1f} MB")
     log.info("="*70)
 
