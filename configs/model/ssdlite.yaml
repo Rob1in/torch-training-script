@@ -1,7 +1,7 @@
 #model:
   name: ssdlite
   device: cuda
-  num_classes: 1  # Will be auto-updated based on dataset (number of classes discovered)
+  # num_classes is auto-computed from the 'classes' config at runtime
   
   # Pretrained weights: Use COCO pretrained weights for transfer learning
   # pretrained: false - Train from scratch, dataset Resize transforms REQUIRED

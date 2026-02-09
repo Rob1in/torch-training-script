@@ -163,7 +163,6 @@ def main(cfg: DictConfig):
     """Main training function."""
     
     log.info(f"check device: {torch.cuda.is_available()}")
-    log.info(f"config:\n{OmegaConf.to_yaml(cfg)}")
     
     # Resolve data directory paths relative to original working directory
     # (Hydra changes CWD to output dir, so relative paths in config would break)
@@ -177,7 +176,6 @@ def main(cfg: DictConfig):
             resolved = str(original_cwd / val)
             cfg.dataset.data[key] = resolved
             log.info(f"Resolved {key}: {val} -> {resolved}")
-    OmegaConf.set_struct(cfg, True)
     
     # Derive jsonl_path and data_dir from each directory
     # Convention: <dir>/dataset.jsonl and <dir>/data/
@@ -206,6 +204,27 @@ def main(cfg: DictConfig):
         if not val_data_dir.exists():
             raise FileNotFoundError(f"data/ directory not found in {val_dir}")
     
+    # Determine classes BEFORE model creation (model needs correct num_classes)
+    # num_classes is always inferred from the classes list — no need for it in model config
+    classes = cfg.get('classes', None)
+    if classes is None:
+        log.info("No classes specified in config. Auto-discovering from training data...")
+        temp_dataset = ViamDataset(
+            jsonl_path=str(train_jsonl),
+            data_dir=str(train_data_dir),
+            classes=None,
+            transform=None
+        )
+        classes = temp_dataset.get_classes()
+        log.info(f"Auto-discovered {len(classes)} classes: {classes}")
+    
+    cfg.model.num_classes = len(classes)
+    OmegaConf.set_struct(cfg, True)
+    
+    # Log the fully resolved config (after num_classes is set)
+    log.info(f"config:\n{OmegaConf.to_yaml(cfg)}")
+    log.info(f"Training with {cfg.model.num_classes} classes: {classes}")
+    
     # Set random seed for reproducibility
     set_seed(cfg.experiment.seed)
     log.info(f"Set random seed to {cfg.experiment.seed} for reproducibility")
@@ -225,22 +244,6 @@ def main(cfg: DictConfig):
         device = torch.device('cpu')
     
     log.info(f"Using device: {device}")
-    
-    # Determine classes BEFORE model creation (model needs correct num_classes)
-    classes = cfg.get('classes', None)
-    if classes is None:
-        log.info("No classes specified in config. Auto-discovering from training data...")
-        temp_dataset = ViamDataset(
-            jsonl_path=str(train_jsonl),
-            data_dir=str(train_data_dir),
-            classes=None,
-            transform=None
-        )
-        classes = temp_dataset.get_classes()
-        log.info(f"Auto-discovered {len(classes)} classes: {classes}")
-    
-    cfg.model.num_classes = len(classes)
-    log.info(f"Training with {cfg.model.num_classes} classes: {classes}")
     
     # Create model (now with correct num_classes)
     if cfg.model.name == "faster_rcnn":

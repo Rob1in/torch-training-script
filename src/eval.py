@@ -375,11 +375,8 @@ def main(cfg: DictConfig):
         classes = sorted(temp_dataset.label_to_id.keys())
         log.info(f"Auto-discovered {len(classes)} classes: {classes}")
     
-    # Set model.num_classes based on classes
-    num_classes = len(classes)
-    if cfg.model.num_classes != num_classes:
-        log.info(f"Setting model.num_classes to {num_classes} (from {len(classes)} classes)")
-        cfg.model.num_classes = num_classes
+    # Set model.num_classes from classes (always inferred, not stored in model config)
+    cfg.model.num_classes = len(classes)
     
     # Create model
     log.info(f"Creating model: {cfg.model.name}")
