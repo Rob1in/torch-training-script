@@ -104,6 +104,12 @@ def configure_model_for_transfer_learning(model, model_name: str, freeze_config:
             unfreeze_layers(actual_model, layer_names=['roi_heads.box_predictor'])
         elif model_name == 'ssdlite':
             unfreeze_layers(actual_model, layer_names=['head.classification_head'])
+        else:
+            raise ValueError(
+                f"freeze_all=True is not supported for model '{model_name}'. "
+                f"Cannot determine which detection head to unfreeze. "
+                f"Supported models: faster_rcnn, ssdlite"
+            )
     else:
         layers_to_freeze = []
         
