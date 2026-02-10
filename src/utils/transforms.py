@@ -8,10 +8,8 @@ import random
 from typing import Dict, List, Optional, Tuple
 
 import torch
-import torch.nn as nn
 import torchvision.transforms.functional as F
 from omegaconf import DictConfig
-from torchvision.ops import box_convert
 
 log = logging.getLogger(__name__)
 
@@ -42,10 +40,6 @@ class DetectionTransform:
         for transform_config in self.transforms:
             transform_name = transform_config['name']
             params = transform_config.get('params', {})
-            
-            # Apply probability-based transforms
-            if 'p' in params and random.random() > params['p']:
-                continue
             
             if transform_name == 'Resize':
                 size = params.get('size', [h, w])
@@ -94,28 +88,30 @@ class DetectionTransform:
                 image = F.normalize(image, mean=mean, std=std)
             
             elif transform_name == 'ColorJitter':
-                brightness = params.get('brightness', 0.2)
-                contrast = params.get('contrast', 0.2)
-                saturation = params.get('saturation', 0.2)
-                hue = params.get('hue', 0.1)
-                
-                # Apply color jitter
-                image = F.adjust_brightness(image, random.uniform(1 - brightness, 1 + brightness))
-                image = F.adjust_contrast(image, random.uniform(1 - contrast, 1 + contrast))
-                image = F.adjust_saturation(image, random.uniform(1 - saturation, 1 + saturation))
-                image = F.adjust_hue(image, random.uniform(-hue, hue))
+                if random.random() < params.get('p', 1.0):
+                    brightness = params.get('brightness', 0.2)
+                    contrast = params.get('contrast', 0.2)
+                    saturation = params.get('saturation', 0.2)
+                    hue = params.get('hue', 0.1)
+                    
+                    image = F.adjust_brightness(image, random.uniform(1 - brightness, 1 + brightness))
+                    image = F.adjust_contrast(image, random.uniform(1 - contrast, 1 + contrast))
+                    image = F.adjust_saturation(image, random.uniform(1 - saturation, 1 + saturation))
+                    image = F.adjust_hue(image, random.uniform(-hue, hue))
             
             elif transform_name == 'RandomGaussianNoise':
-                mean = params.get('mean', 0.0)
-                std = params.get('std', 0.1)
-                noise = torch.randn_like(image) * std + mean
-                image = image + noise
-                image = torch.clamp(image, 0, 1)
+                if random.random() < params.get('p', 1.0):
+                    mean = params.get('mean', 0.0)
+                    std = params.get('std', 0.1)
+                    noise = torch.randn_like(image) * std + mean
+                    image = image + noise
+                    image = torch.clamp(image, 0, 1)
             
             elif transform_name == 'RandomGamma':
-                gamma = params.get('gamma', 1.0)
-                gamma_value = random.uniform(max(0.1, 1 - gamma), 1 + gamma)
-                image = F.adjust_gamma(image, gamma_value)
+                if random.random() < params.get('p', 1.0):
+                    gamma = params.get('gamma', 1.0)
+                    gamma_value = random.uniform(max(0.1, 1 - gamma), 1 + gamma)
+                    image = F.adjust_gamma(image, gamma_value)
         
         # Ensure boxes are valid
         boxes[:, [0, 2]] = torch.clamp(boxes[:, [0, 2]], 0, w)
