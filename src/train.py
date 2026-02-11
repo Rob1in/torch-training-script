@@ -342,8 +342,7 @@ def main(cfg: DictConfig):
         
         log.info(f"Auto-split: {train_size} train / {val_size} val samples (from {total_size} total)")
     
-    # Create dataloaders
-    # PyTorch reference: batch_size per GPU, we're using 1 GPU
+    #TODO: change this wh
     num_workers = cfg.training.num_workers
     pin_memory = cfg.training.pin_memory and device.type == 'cuda'
     
@@ -353,6 +352,7 @@ def main(cfg: DictConfig):
         shuffle=True,
         num_workers=num_workers,
         pin_memory=pin_memory,
+        #TODO: replace GPUCollate with CPU transform and rely on multiple workers for keeping GPU fed and CPU busy
         collate_fn=GPUCollate(device, train_transform)
     )
     

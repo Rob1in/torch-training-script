@@ -32,6 +32,7 @@ class ViamDataset(Dataset):
         self.samples = []
         
         jsonl_path = Path(jsonl_path)
+        self.jsonl_path = jsonl_path
         if not jsonl_path.exists():
             raise FileNotFoundError(f"JSONL file not found: {jsonl_path}")
         
