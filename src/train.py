@@ -29,7 +29,7 @@ log = logging.getLogger(__name__)
 OmegaConf.register_new_resolver("eval", eval)
 
 
-def train_one_epoch(model, optimizer, data_loader, device, epoch, cfg, model_ema=None):
+def train_one_epoch(model, optimizer, data_loader, epoch, cfg, model_ema=None):
     """
     Train for one epoch. Matches PyTorch Vision reference implementation.
     
@@ -37,19 +37,22 @@ def train_one_epoch(model, optimizer, data_loader, device, epoch, cfg, model_ema
         model: The model to train
         optimizer: Optimizer
         data_loader: Training data loader
-        device: Device to train on
         epoch: Current epoch number
         cfg: Hydra config
         model_ema: Optional EMA model
         
     Returns:
-        Dictionary of training metrics
+        Dict with:
+            - 'loss' (float): Average total training loss over the epoch.
+            - 'loss_dict' (dict[str, float]): Average per-component losses (e.g. loss_box_reg,
+              loss_classifier, loss_objectness), keyed by the model's loss names.
     """
     model.train()
     
     # PyTorch reference: Warmup only in epoch 0
     warmup_scheduler = None
     if epoch == 0:
+        #TODO: change number of iterations to 10% of train set or something like that
         warmup_factor = cfg.training.get('warmup_factor', 0.001)  # 1/1000
         warmup_iters = min(cfg.training.get('warmup_iters', 1000), len(data_loader) - 1)
         
@@ -68,9 +71,11 @@ def train_one_epoch(model, optimizer, data_loader, device, epoch, cfg, model_ema
     for batch_idx, (images, targets) in enumerate(pbar):
         # Forward pass - model returns loss dict in training mode
         loss_dict = model(images, targets)
+
+
+        #TODO: add weights here as hyperparameters
         losses = sum(loss for loss in loss_dict.values())
         
-        # Check for nan/inf losses (PyTorch reference pattern)
         loss_value = losses.item()
         if not math.isfinite(loss_value):
             log.error(f"Loss is {loss_value}, stopping training")
@@ -213,7 +218,6 @@ def main(cfg: DictConfig):
             jsonl_path=str(train_jsonl),
             data_dir=str(train_data_dir),
             classes=None,
-            transform=None
         )
         classes = temp_dataset.get_classes()
         log.info(f"Auto-discovered {len(classes)} classes: {classes}")
@@ -299,13 +303,11 @@ def main(cfg: DictConfig):
             jsonl_path=str(train_jsonl),
             data_dir=str(train_data_dir),
             classes=classes,
-            transform=None  # Transform applied in collate_fn
         )
         val_dataset = ViamDataset(
             jsonl_path=str(val_jsonl),
             data_dir=str(val_data_dir),
             classes=classes,
-            transform=None  # Transform applied in collate_fn
         )
         # Store full dataset reference for COCO GT (used when auto-splitting)
         full_dataset = None
@@ -318,7 +320,6 @@ def main(cfg: DictConfig):
             jsonl_path=str(train_jsonl),
             data_dir=str(train_data_dir),
             classes=classes,
-            transform=None  # Transform applied in collate_fn
         )
         
         total_size = len(full_dataset)
@@ -464,7 +465,6 @@ def main(cfg: DictConfig):
             model=model,
             optimizer=optimizer,
             data_loader=train_loader,
-            device=device,
             epoch=epoch,
             cfg=cfg,
             model_ema=model_ema

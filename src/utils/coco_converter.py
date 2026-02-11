@@ -5,8 +5,9 @@ import json
 import logging
 import os
 from pathlib import Path
+from typing import TYPE_CHECKING, List, Optional
+
 from PIL import Image
-from typing import Optional, List, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from datasets.viam_dataset import ViamDataset
@@ -81,7 +82,6 @@ def jsonl_to_coco(
     
     log.info(f"Creating COCO format with {len(classes)} categories: {classes}")
     
-    image_id_to_idx = {}
     annotation_id = 1
     
     with open(jsonl_path, 'r') as f:
@@ -138,17 +138,12 @@ def jsonl_to_coco(
                 "height": img_height
             })
             
-            image_id_to_idx[image_id] = len(coco_data["images"]) - 1
-            
             # Filter annotations to only include specified classes
             bounding_boxes = data.get('bounding_box_annotations', [])
-            if classes is not None:
-                filtered_boxes = [
-                    bbox for bbox in bounding_boxes
-                    if bbox.get('annotation_label') in label_to_id
-                ]
-            else:
-                filtered_boxes = bounding_boxes
+            filtered_boxes = [
+                bbox for bbox in bounding_boxes
+                if bbox.get('annotation_label') in label_to_id
+            ]
             
             # Add annotations
             for bbox in filtered_boxes:

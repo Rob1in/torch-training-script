@@ -5,7 +5,6 @@ Shared between training and evaluation scripts.
 import io
 import logging
 from contextlib import redirect_stdout
-from pathlib import Path
 from typing import Dict, List, Optional
 
 import torch

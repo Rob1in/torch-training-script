@@ -20,7 +20,6 @@ class ViamDataset(Dataset):
         jsonl_path: str, 
         data_dir: str, 
         classes: Optional[List[str]] = None,
-        transform=None
     ):
         """
         Args:
@@ -28,10 +27,8 @@ class ViamDataset(Dataset):
             data_dir: Directory containing images (or base directory if image_path is absolute)
             classes: List of annotation labels to include (e.g., ['triangle', 'person']). 
                     If None, includes all annotations found in the JSONL file.
-            transform: Optional transform to be applied to images (handled by GPUCollate)
         """
         self.data_dir = Path(data_dir)
-        self.transform = transform
         self.samples = []
         
         jsonl_path = Path(jsonl_path)

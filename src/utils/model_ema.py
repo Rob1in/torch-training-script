@@ -3,7 +3,7 @@ Exponential Moving Average (EMA) for model weights.
 Based on PyTorch's reference detection implementation.
 """
 import copy
-from collections import OrderedDict
+
 import torch
 import torch.nn as nn
 

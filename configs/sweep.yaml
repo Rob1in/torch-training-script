@@ -34,7 +34,6 @@ defaults:
 experiment:
   name: sweep_${now:%Y-%m-%d}_${now:%H-%M-%S}
   seed: 42
-  device: cuda
 
 # Classes configuration
 # List of annotation labels to train/evaluate on.
@@ -71,7 +70,6 @@ training:
   # Training settings
   gradient_clip: 0.0  # Max gradient norm (0 to disable, PyTorch reference doesn't use it)
   early_stopping_patience: 10  # Shorter patience for sweeps
-  checkpoint_dir: checkpoints
   num_workers: 1
   pin_memory: false
   
@@ -87,5 +85,3 @@ training:
 logging:
   save_dir: ${hydra:runtime.output_dir}
 
-evaluation:
-  confidence_threshold: 0.7

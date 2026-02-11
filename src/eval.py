@@ -357,13 +357,6 @@ def main(cfg: DictConfig):
     if eval_specific.get('checkpoint_path'):
         cfg.checkpoint_path = eval_specific['checkpoint_path']
     
-    # Auto-set checkpoint_path if not provided
-    if 'checkpoint_path' not in cfg or cfg.checkpoint_path is None:
-        checkpoint_path = run_dir / "best_model.pth"
-        if checkpoint_path.exists():
-            cfg.checkpoint_path = str(checkpoint_path)
-            log.info(f"Auto-detected checkpoint: {checkpoint_path}")
-    
     log.info(f"Loaded training config from run: {run_dir.name}")
     
     # Set dataset paths (always override with dataset_dir)

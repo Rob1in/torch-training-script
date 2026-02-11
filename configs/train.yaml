@@ -11,7 +11,6 @@ defaults:
 experiment:
   name: run_${now:%Y-%m-%d}_${now:%H-%M-%S}
   seed: 42
-  device: cuda
 
 # Classes configuration
 # List of annotation labels to train/evaluate on.
@@ -33,7 +32,7 @@ classes:
   - triangle
   - triangle_inverted
   
-# Training configuration using pre-computed optimization results
+# Training configuration
 training:
   # Batch size - use 16 for 24GB GPU
   batch_size: 16
@@ -63,7 +62,6 @@ training:
   # Training settings
   gradient_clip: 0.0  # Max gradient norm (0 to disable, PyTorch reference doesn't use it)
   early_stopping_patience: 15
-  checkpoint_dir: checkpoints
   num_workers: 1
   pin_memory: false
   

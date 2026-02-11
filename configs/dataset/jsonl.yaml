@@ -11,7 +11,6 @@ name: jsonl
 data:
   train_dir: null   # Required: directory containing dataset.jsonl + data/
   val_dir: null     # Optional: if null, auto-split from train_dir (see training.val_split)
-  test_dir: null    # Optional: for eval.py (eval.py uses dataset_dir CLI arg instead)
 
 # Transform configuration
 # Note: Transforms are applied via GPUCollate in the dataloader BEFORE model.forward()
