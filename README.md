@@ -2,6 +2,32 @@
 
 A PyTorch-based object detection training pipeline supporting Faster R-CNN and SSD-Lite with multiclass detection capabilities. Designed for RGB images using Viam JSONL-formatted datasets.
 
+## Table of Contents
+
+- [Quick Start](#quick-start)
+- [Features](#features)
+- [Requirements](#requirements)
+- [Installation](#installation)
+- [Configuration](#configuration)
+  - [Classes Configuration](#classes-configuration)
+  - [Dataset Paths](#dataset-paths)
+  - [Model Selection](#model-selection)
+- [Supported Models](#supported-models)
+- [Training](#training)
+  - [Mode 1: Regular Training](#mode-1-regular-training-recommended)
+  - [Mode 2: Hyperparameter Optimization](#mode-2-hyperparameter-optimization-advanced)
+  - [Training Hyperparameters](#training-hyperparameters)
+  - [Understanding Output Directories](#understanding-output-directories)
+- [Evaluation](#evaluation)
+- [ONNX Conversion](#onnx-conversion)
+- [Viam Vision Service](#viam-vision-service)
+- [Viam Integration Workflow](#viam-integration-workflow)
+  - [Local Testing](#local-testing)
+  - [Registry Deployment](#registry-deployment)
+- [Project Structure](#project-structure)
+- [Key Implementation Details](#key-implementation-details)
+- [Key Dependencies](#key-dependencies)
+
 ## Quick Start
 
 ```bash
@@ -92,38 +118,6 @@ pip install -e ".[all,dev]"
 - **sweep**: Hyperparameter optimization (optuna, hydra-optuna-sweeper)
 - **dev**: Development tools (pytest, black, flake8, mypy)
 - **all**: All dependencies combined (excluding sweep and dev)
-
-## Dataset Format
-
-The training pipeline expects datasets in JSONL format where each line is a JSON object containing:
-
-```json
-{
-  "image_path": "path/to/image.jpg",
-  "bounding_box_annotations": [
-    {
-      "annotation_label": "person",
-      "x_min_normalized": 0.1,
-      "y_min_normalized": 0.2,
-      "x_max_normalized": 0.5,
-      "y_max_normalized": 0.8
-    },
-    {
-      "annotation_label": "car",
-      "x_min_normalized": 0.6,
-      "y_min_normalized": 0.3,
-      "x_max_normalized": 0.9,
-      "y_max_normalized": 0.7
-    }
-  ]
-}
-```
-
-**Key points:**
-- `image_path`: Path to the image file (can be absolute or relative to `data_dir`)
-- `annotation_label`: The class name for this bounding box
-- Coordinates are normalized (0.0 to 1.0) relative to image dimensions
-- Images must be RGB format (3 channels)
 
 ## Configuration
 
