@@ -20,10 +20,7 @@ A PyTorch-based object detection training pipeline supporting Faster R-CNN and S
 - [ONNX Conversion](#onnx-conversion)
 - [Viam Vision Service](#viam-vision-service)
 - [Viam Integration Workflow](#viam-integration-workflow)
-  - [Local Testing](#local-testing)
-  - [Registry Deployment](#registry-deployment)
 - [Project Structure](#project-structure)
-- [Key Implementation Details](#key-implementation-details)
 - [Key Dependencies](#key-dependencies)
 
 ## Quick Start
@@ -53,21 +50,14 @@ python src/train.py --config-name=sweep --multirun
 
 ## Features
 
-- **Multiclass Detection**: Train on multiple object classes simultaneously
-- **RGB Images Only**: Optimized for 3-channel RGB input (no grayscale support)
-- **JSONL Dataset Format**: Uses JSONL files with normalized bounding box annotations
-- **Two Model Architectures**: Supports Faster R-CNN and SSD-Lite
-- **PyTorch Reference Training**: Follows PyTorch's official detection training best practices
-  - SGD optimizer with momentum (Adam also supported)
-  - Linear warmup + MultiStepLR or CosineAnnealing scheduling
-  - Optional normalization layer weight decay separation
-  - Optional gradient clipping (disabled by default)
-  - Default loss weighting from torchvision
-- **Model EMA**: Exponential Moving Average for more stable models
-- **Transfer Learning**: Pretrained COCO weights with configurable layer freezing
-- **Automatic Class Discovery**: Can auto-discover classes from dataset or use explicit configuration
-- **COCO Evaluation**: Automatic conversion from JSONL to COCO format for evaluation metrics
-- **Hydra Configuration**: Flexible configuration management with Hydra
+- **Faster R-CNN and SSD-Lite** with MobileNetV3 backbones
+- **Transfer learning** from pretrained COCO weights with configurable layer freezing
+- **Model EMA** for more stable training
+- **COCO evaluation** (mAP, AP50, AP75) during training and standalone
+- **Hyperparameter optimization** via Optuna sweeps
+- **ONNX export** for production deployment
+- **Viam Vision Service module** included for edge inference (no PyTorch needed)
+- **Hydra configuration** for flexible experiment management
 
 ## Requirements
 
@@ -141,11 +131,7 @@ classes:
   - person
 ```
 
-The `classes` configuration:
-- Is defined at the top level in `configs/train.yaml` (or `configs/sweep.yaml`)
-- Determines `model.num_classes` automatically before model creation
-- Filters annotations in all datasets (train, val, test)
-- Creates consistent label-to-ID mappings across the pipeline
+If `classes` is set, only annotations matching those labels are used. If `null`, all labels found in the dataset are used automatically.
 
 ### Dataset Paths
 
@@ -704,36 +690,6 @@ torch-training-script/
 ├── requirements.txt
 └── pyproject.toml
 ```
-
-## Key Implementation Details
-
-### Multiclass Detection
-
-- Classes are discovered from `annotation_label` fields in JSONL files
-- Label-to-ID mapping is created automatically (1-based, 0 is background)
-- Model `num_classes` is set automatically based on the number of classes
-- All datasets (train/val/test) use the same class configuration
-
-### RGB-Only Support
-
-- All models assume 3-channel RGB input
-- No grayscale conversion or single-channel support
-- ImageNet normalization stats used by default (handled by model's built-in transform)
-
-### Class Configuration Flow
-
-1. `classes` is read from top-level config (`configs/train.yaml` or `configs/sweep.yaml`)
-2. If `null`, classes are auto-discovered from the training dataset
-3. `model.num_classes` is set to `len(classes)` before model creation
-4. All datasets are created with the same `classes` list
-5. COCO converter uses the same `classes` for evaluation
-
-### Hydra Configuration Precedence
-
-With `_self_` last in `defaults`, values in the top-level config (e.g., `train.yaml`) override values from sub-configs:
-- `model/*.yaml` loaded first
-- `dataset/jsonl.yaml` merged second
-- Top-level config (`_self_`) merged last (highest precedence)
 
 ## Key Dependencies
 
