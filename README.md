@@ -8,16 +8,14 @@ A PyTorch-based object detection training pipeline supporting Faster R-CNN and S
 - [Features](#features)
 - [Requirements](#requirements)
 - [Installation](#installation)
-- [Configuration](#configuration)
+- [Training](#training)
   - [Classes Configuration](#classes-configuration)
   - [Dataset Paths](#dataset-paths)
   - [Model Selection](#model-selection)
-- [Supported Models](#supported-models)
-- [Training](#training)
-  - [Mode 1: Regular Training](#mode-1-regular-training-recommended)
-  - [Mode 2: Hyperparameter Optimization](#mode-2-hyperparameter-optimization-advanced)
+  - [Regular Training](#regular-training)
+  - [Hyperparameter Optimization](#hyperparameter-optimization)
   - [Training Hyperparameters](#training-hyperparameters)
-  - [Understanding Output Directories](#understanding-output-directories)
+  - [Output Directories](#output-directories)
 - [Evaluation](#evaluation)
 - [ONNX Conversion](#onnx-conversion)
 - [Viam Vision Service](#viam-vision-service)
@@ -119,7 +117,7 @@ pip install -e ".[all,dev]"
 - **dev**: Development tools (pytest, black, flake8, mypy)
 - **all**: All dependencies combined (excluding sweep and dev)
 
-## Configuration
+## Training
 
 ### Classes Configuration
 
@@ -174,27 +172,21 @@ defaults:
   - _self_
 ```
 
-## Supported Models
+**Faster R-CNN:**
+- Config: `configs/model/faster_rcnn.yaml`
+- Backbone: MobileNetV3-Large with FPN
+- Input Size: Configurable (default: 800x1333)
+- Best for: High accuracy, slower inference
 
-### Faster R-CNN
-- **Config**: `configs/model/faster_rcnn.yaml`
-- **Backbone**: MobileNetV3-Large with FPN
-- **Input Size**: Configurable (default: 800x1333)
-- **Best for**: High accuracy, slower inference
+**SSD-Lite:**
+- Config: `configs/model/ssdlite.yaml`
+- Backbone: MobileNetV3-Large
+- Input Size: 320x320
+- Best for: Fast inference, mobile deployment
 
-### SSD-Lite
-- **Config**: `configs/model/ssdlite.yaml`
-- **Backbone**: MobileNetV3-Large
-- **Input Size**: 320x320
-- **Best for**: Fast inference, mobile deployment
+### Regular Training
 
-## Training
-
-The training pipeline supports two modes: **regular training** and **hyperparameter optimization**.
-
-### Mode 1: Regular Training (Recommended)
-
-Uses pre-computed hyperparameters from previous optimization runs.
+The training pipeline supports two modes. Regular training uses pre-computed hyperparameters.
 
 **Basic usage:**
 ```bash
@@ -219,7 +211,7 @@ Then run:
 python src/train.py --config-name=train
 ```
 
-### Mode 2: Hyperparameter Optimization (Advanced)
+### Hyperparameter Optimization
 
 Run Optuna sweeps to find optimal hyperparameters for your dataset.
 
@@ -246,43 +238,43 @@ After a successful sweep, copy the best parameters to `configs/optimization_resu
 
 The training pipeline follows **PyTorch's reference detection training** best practices:
 
-#### Optimizer
-- **Type**: SGD with momentum (Adam also available via `training.optimizer`)
-- **Learning Rate**: 0.0025 (base, for single GPU)
-- **Momentum**: 0.9
-- **Weight Decay**: 0.0001 (L2 regularization)
-- **Nesterov**: Disabled by default (`training.nesterov: false`)
-- **Norm Weight Decay**: Optional separate weight decay for normalization layers (`training.norm_weight_decay`)
+**Optimizer:**
+- Type: SGD with momentum (Adam also available via `training.optimizer`)
+- Learning Rate: 0.0025 (base, for single GPU)
+- Momentum: 0.9
+- Weight Decay: 0.0001 (L2 regularization)
+- Nesterov: Disabled by default (`training.nesterov: false`)
+- Norm Weight Decay: Optional separate weight decay for normalization layers (`training.norm_weight_decay`)
 
-#### Learning Rate Schedule
-- **Warmup**: Linear warmup for first 1000 iterations (epoch 0 only)
+**Learning Rate Schedule:**
+- Warmup: Linear warmup for first 1000 iterations (epoch 0 only)
   - Starts at 0.1% of base LR (warmup_factor: 0.001)
   - Linearly increases to base LR
-- **Schedule**: MultiStepLR (default) or CosineAnnealingLR
+- Schedule: MultiStepLR (default) or CosineAnnealingLR
   - MultiStepLR: Reduces LR by 10x at epochs [16, 22] (for 26-epoch training)
   - Adjustable via `training.lr_steps` and `training.lr_gamma` in config
 
-#### Gradient Clipping
-- **Disabled by default** (`training.gradient_clip: 0.0`)
+**Gradient Clipping:**
+- Disabled by default (`training.gradient_clip: 0.0`)
 - Set to a positive value (e.g., 10.0) to enable
 
-#### Loss Function
-- Uses **default torchvision loss weights** (no custom weighting)
+**Loss Function:**
+- Uses default torchvision loss weights (no custom weighting)
 - For Faster R-CNN: combines RPN + detection head losses
 - For SSD-Lite: combines classification + localization losses
 
-#### Model EMA
-- **Enabled by default** (`training.use_ema: true`)
+**Model EMA:**
+- Enabled by default (`training.use_ema: true`)
 - Decay rate: 0.9998
 - EMA weights are used for evaluation and saved in checkpoints
 
-### Understanding Output Directories
+### Output Directories
 
 The training pipeline creates two different output directories depending on the run mode:
 
-#### `outputs/` - Single Training Runs
+**`outputs/` - Single Training Runs**
 
-Used for **regular training** (`--config-name=train`):
+Used for regular training (`--config-name=train`):
 
 ```
 outputs/
@@ -299,25 +291,15 @@ outputs/
         └── train.log                # Training logs (loss, metrics, etc.)
 ```
 
-**What you'll find:**
-- **`best_model.pth`**: Your trained model checkpoint (saved when validation mAP improves)
-- **`.hydra/config.yaml`**: Exact configuration used (for reproducibility)
-- **`train.log`**: All training output (epochs, losses, COCO metrics)
-- **`tensorboard/`**: Training curves (visualize with `tensorboard --logdir outputs/`)
+What you'll find:
+- `best_model.pth`: Your trained model checkpoint (saved when validation mAP improves)
+- `.hydra/config.yaml`: Exact configuration used (for reproducibility)
+- `train.log`: All training output (epochs, losses, COCO metrics)
+- `tensorboard/`: Training curves (visualize with `tensorboard --logdir outputs/`)
 
-**Example:**
-```bash
-# Train once
-python src/train.py --config-name=train
+**`multirun/` - Hyperparameter Sweeps (Optuna)**
 
-# Output saved to: outputs/2026-01-30/14-25-30/
-```
-
----
-
-#### `multirun/` - Hyperparameter Sweeps (Optuna)
-
-Used for **hyperparameter optimization** (`--config-name=sweep --multirun`):
+Used for hyperparameter optimization (`--config-name=sweep --multirun`):
 
 ```
 multirun/
@@ -330,65 +312,37 @@ multirun/
         │   ├── tensorboard/
         │   └── train.log
         ├── 1/                       # Trial 1 (second combination)
-        │   ├── .hydra/
-        │   ├── tensorboard/
-        │   └── train.log
-        ├── 2/                       # Trial 2 (third combination)
         │   └── ...
         └── optimization_results.yaml # Best hyperparameters found
 ```
 
-**What you'll find:**
-- **Numbered directories (0, 1, 2, ...)**: Each trial's results
-- **`.hydra/overrides.yaml`**: The hyperparameters Optuna tested for that trial
-  ```yaml
-  - training.learning_rate=0.0001025
-  - training.weight_decay=0.0007114
-  - training.momentum=0.912
-  ```
-- **`optimization_results.yaml`**: Summary with best hyperparameters and their validation mAP
-- **No `best_model.pth`**: Sweeps don't save models by default (focused on finding best hyperparameters)
+What you'll find:
+- Numbered directories (0, 1, 2, ...): Each trial's results
+- `.hydra/overrides.yaml`: The hyperparameters Optuna tested for that trial
+- `optimization_results.yaml`: Summary with best hyperparameters and their validation mAP
+- No `best_model.pth`: Sweeps don't save models (focused on finding best hyperparameters)
 
-**Example:**
-```bash
-# Run sweep with 30 trials
-python src/train.py --config-name=sweep --multirun
-
-# Output saved to: multirun/2026-01-30/14-30-15/
-#   ├── 0/  (trial 0 with learning_rate=0.001, weight_decay=1e-5, momentum=0.91)
-#   ├── 1/  (trial 1 with learning_rate=0.0002, weight_decay=5e-6, momentum=0.88)
-#   └── ... (28 more trials)
-```
-
----
-
-#### Key Differences
+**Key Differences:**
 
 | Feature | `outputs/` (Single Run) | `multirun/` (Sweep) |
 |---------|------------------------|---------------------|
 | **Created by** | `--config-name=train` | `--config-name=sweep --multirun` |
 | **Purpose** | Train one model | Find best hyperparameters |
-| **Structure** | One directory per run | One directory per trial |
-| **Checkpoint** | `best_model.pth` saved (best mAP) | No checkpoints (hyperparameter search) |
-| **Use case** | Production training | Hyperparameter tuning |
-| **Training time** | Full epochs (e.g., 26) | Can use fewer epochs (e.g., 15) |
+| **Checkpoint** | `best_model.pth` saved (best mAP) | No checkpoints |
+| **Training time** | Full epochs (e.g., 26) | Fewer epochs (e.g., 15) |
 
----
+**Typical Workflow:**
 
-#### Typical Workflow
-
-1. **First**: Run hyperparameter sweep to find best parameters
+1. Run hyperparameter sweep to find best parameters
    ```bash
    python src/train.py --config-name=sweep --multirun
-   # Check multirun/YYYY-MM-DD/HH-MM-SS/optimization_results.yaml
    ```
 
-2. **Then**: Copy best parameters to `configs/optimization_results/`
+2. Copy best parameters to `configs/optimization_results/`
 
-3. **Finally**: Train production model with best hyperparameters
+3. Train production model with best hyperparameters
    ```bash
    python src/train.py --config-name=train
-   # Get best_model.pth from outputs/YYYY-MM-DD/HH-MM-SS/
    ```
 
 ## Evaluation
@@ -582,9 +536,9 @@ Classifications and point clouds are not supported.
 
 ## Viam Integration Workflow
 
-This section walks through the full end-to-end workflow: from exporting a dataset on Viam Cloud to deploying a trained model on a Viam machine.
+This section walks through the full end-to-end workflow: from exporting a dataset from Viam Cloud to deploying a trained model on a Viam machine.
 
-### Local Testing
+### Model training
 
 **1. Export a dataset from Viam Cloud:**
 
@@ -614,7 +568,10 @@ bash convert_model.sh outputs/YYYY-MM-DD/HH-MM-SS --dataset-dir ./my_dataset
 
 This creates `model.onnx` and `labels.txt` in `outputs/YYYY-MM-DD/HH-MM-SS/onnx_model/`.
 
-**5. Build the vision service module:**
+
+### Build ONNX vision service
+
+**1. Build the vision service module:**
 
 ```bash
 bash src/onnx_vision_service/build.sh
@@ -622,7 +579,7 @@ bash src/onnx_vision_service/build.sh
 
 This produces `dist/onnx-vision-service`.
 
-**6. Configure your Viam machine:**
+**2. Configure your Viam machine:**
 
 Add the module, a test camera, and the vision service to your machine's JSON config. For local testing, you can use the `image_file` camera model to point at an image from your dataset:
 
