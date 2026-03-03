@@ -49,29 +49,38 @@ def train_one_epoch(model, optimizer, data_loader, epoch, cfg, model_ema=None):
     """
     model.train()
     
+    accum_steps = cfg.training.get('gradient_accumulation_steps', 1)
+    
     # PyTorch reference: Warmup only in epoch 0
+    # Warmup counts optimizer steps (not data batches) so behaviour is
+    # consistent regardless of accumulation_steps.
     warmup_scheduler = None
     if epoch == 0:
         #TODO: change number of iterations to 10% of train set or something like that
         warmup_factor = cfg.training.get('warmup_factor', 0.001)  # 1/1000
-        warmup_iters = min(cfg.training.get('warmup_iters', 1000), len(data_loader) - 1)
+        optimizer_steps_per_epoch = math.ceil(len(data_loader) / accum_steps)
+        warmup_iters = min(cfg.training.get('warmup_iters', 1000), optimizer_steps_per_epoch - 1)
         
         warmup_scheduler = torch.optim.lr_scheduler.LinearLR(
             optimizer,
             start_factor=warmup_factor,
             total_iters=warmup_iters
         )
-        log.info(f"Epoch 0: Applying warmup for {warmup_iters} iterations (start_factor={warmup_factor})")
+        log.info(f"Epoch 0: Applying warmup for {warmup_iters} optimizer steps (start_factor={warmup_factor})")
+    
+    if accum_steps > 1:
+        log.info(f"Gradient accumulation: {accum_steps} steps (effective batch = {cfg.training.batch_size} * {accum_steps})")
     
     train_loss = 0.0
     train_losses = {}  # Dynamic loss tracking - will auto-populate based on model's loss keys
     
     pbar = tqdm(data_loader, desc=f'Epoch {epoch+1} [Train]')
     
+    optimizer.zero_grad()
+    
     for batch_idx, (images, targets) in enumerate(pbar):
         # Forward pass - model returns loss dict in training mode
         loss_dict = model(images, targets)
-
 
         #TODO: add weights here as hyperparameters
         losses = sum(loss for loss in loss_dict.values())
@@ -82,25 +91,25 @@ def train_one_epoch(model, optimizer, data_loader, epoch, cfg, model_ema=None):
             log.error(f"Loss dict: {loss_dict}")
             sys.exit(1)
         
-        # Backward pass
-        optimizer.zero_grad()
-        losses.backward()
+        # Scale loss and backward (gradients accumulate across micro-batches)
+        (losses / accum_steps).backward()
         
-        # Gradient clipping (optional, PyTorch reference doesn't use it by default)
-        if cfg.training.get('gradient_clip', 0.0) > 0:
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=cfg.training.gradient_clip)
+        # Sync step: end of accumulation window OR final batch of the epoch
+        is_sync = ((batch_idx + 1) % accum_steps == 0) or (batch_idx + 1 == len(data_loader))
+        if is_sync:
+            if cfg.training.get('gradient_clip', 0.0) > 0:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=cfg.training.gradient_clip)
+            
+            optimizer.step()
+            optimizer.zero_grad()
+            
+            if model_ema is not None:
+                model_ema.update(model)
+            
+            if warmup_scheduler is not None:
+                warmup_scheduler.step()
         
-        optimizer.step()
-        
-        # Update EMA after optimizer step
-        if model_ema is not None:
-            model_ema.update(model)
-        
-        # PyTorch reference: Warmup scheduler only in epoch 0, stepped per-iteration
-        if warmup_scheduler is not None:
-            warmup_scheduler.step()
-        
-        # Accumulate losses for logging (dynamic keys for different model architectures)
+        # Accumulate *unscaled* losses for logging (dynamic keys for different model architectures)
         train_loss += loss_value
         for k, v in loss_dict.items():
             if k not in train_losses:
