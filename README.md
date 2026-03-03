@@ -522,52 +522,51 @@ Classifications and point clouds are not supported.
 
 ## Viam Integration Workflow
 
-This section walks through the full end-to-end workflow: from exporting a dataset from Viam Cloud to deploying a trained model on a Viam machine.
+End-to-end: export a dataset from Viam Cloud, train a model, and deploy it on a Viam machine.
 
-### Model training
-
-**1. Export a dataset from Viam Cloud:**
+### Step 1: Export dataset
 
 ```bash
 viam dataset export --destination=./my_dataset --dataset-id=<dataset-id>
 ```
 
-**2. Train a model on your dataset:**
+### Step 2: Train
+
+Edit `configs/train.yaml` to set your classes (or leave `classes: null` to auto-discover), then:
 
 ```bash
 python src/train.py --config-name=train dataset.data.train_dir=./my_dataset
 ```
 
-Edit `configs/train.yaml` to set the classes you want to detect, or leave `classes: null` to auto-discover them from the dataset.
-
-**3. Evaluate the trained model:**
+### Step 3: Evaluate
 
 ```bash
 python src/eval.py dataset_dir=./my_dataset run_dir=outputs/YYYY-MM-DD/HH-MM-SS
 ```
 
-**4. Convert to ONNX:**
+### Step 4: Convert to ONNX
 
 ```bash
 bash convert_model.sh outputs/YYYY-MM-DD/HH-MM-SS --dataset-dir ./my_dataset
 ```
 
-This creates `model.onnx` and `labels.txt` in `outputs/YYYY-MM-DD/HH-MM-SS/onnx_model/`.
+Output: `outputs/YYYY-MM-DD/HH-MM-SS/onnx_model/` containing `model.onnx` and `labels.txt`.
 
-
-### Build ONNX vision service
-
-**1. Build the vision service module:**
+### Step 5: Build the vision service
 
 ```bash
 bash src/onnx_vision_service/build.sh
 ```
 
-This produces `dist/onnx-vision-service`.
+Output: `dist/onnx-vision-service` (standalone executable).
 
-**2. Configure your Viam machine:**
+### Step 6: Configure your Viam machine
 
-Add the module, a test camera, and the vision service to your machine's JSON config. For local testing, you can use the `image_file` camera model to point at an image from your dataset:
+Add three blocks to your machine's JSON config:
+
+1. **Module** -- points to the vision service executable
+2. **Component** -- a camera (for local testing, `image_file` can point at an image from your dataset)
+3. **Service** -- the detector, referencing `model.onnx`, `labels.txt`, and the camera
 
 ```json
 {
@@ -605,11 +604,11 @@ Add the module, a test camera, and the vision service to your machine's JSON con
 }
 ```
 
-### Registry Deployment
+### Step 7 (optional): Deploy via the Viam registry
 
-For production, upload your model to the Viam registry so any machine in your organization can use it without needing local file paths.
+For production, upload your model to the registry so any machine in your org can use it without local file paths.
 
-**1. Upload the model package:**
+**7a. Upload the model package:**
 
 ```bash
 viam packages upload \
@@ -622,13 +621,13 @@ viam packages upload \
     --model-type=<model-type>
 ```
 
-**2. Add the package to your machine config:**
+**7b. Add the package to your machine config:**
 
-Go to **Data -> Models** in the Viam app, find your uploaded model, and click **Copy package JSON**. Then open your machine's JSON config and paste it into the `"packages": [...]` array.
+In the Viam app, go to **Data -> Models**, find your model, and click **Copy package JSON**. Paste it into the `"packages": [...]` array in your machine's JSON config.
 
-**3. Reference the package in your vision service config:**
+**7c. Reference the package in the vision service:**
 
-Once the package is added, use the `${packages.ml_model.<package-name>}` variable to reference the model and labels files in your vision service attributes:
+Replace the local file paths in your service attributes with package variables:
 
 ```json
 {
@@ -645,7 +644,7 @@ Once the package is added, use the `${packages.ml_model.<package-name>}` variabl
 }
 ```
 
-This way, the machine automatically downloads the model package and resolves the paths at runtime.
+The machine automatically downloads the package and resolves the paths at runtime.
 
 ## Project Structure
 

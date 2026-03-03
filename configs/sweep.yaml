@@ -5,6 +5,8 @@
 
 # Hydra Optuna Sweeper Configuration
 hydra:
+  sweep:
+    dir: outputs/${now:%Y-%m-%d}_${now:%H-%M-%S}
   sweeper:
     _target_: hydra_plugins.hydra_optuna_sweeper.optuna_sweeper.OptunaSweeper
     sampler:

@@ -97,6 +97,10 @@ training:
   #   - Best when: Very small dataset (<100 images) or debugging
   #   - Training time: Fastest
 
+hydra:
+  run:
+    dir: outputs/${now:%Y-%m-%d}_${now:%H-%M-%S}
+
 # Logging
 logging:
   save_dir: ${hydra:runtime.output_dir}
