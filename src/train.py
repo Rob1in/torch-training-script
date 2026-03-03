@@ -551,8 +551,7 @@ def main(cfg: DictConfig):
     
     # Training loop
     writer = SummaryWriter(Path(cfg.logging.save_dir) / 'tensorboard')
-    best_map = 0.0  # Track best mAP (AP@0.50:0.95)
-    best_map50 = 0.0  # Also track AP50 for reference
+    best_val_loss = float('inf')
     patience_counter = 0
     
     log.info("Starting training...")
@@ -573,10 +572,10 @@ def main(cfg: DictConfig):
         # Use EMA model if available (typically performs better)
         eval_model = model_ema.module if model_ema is not None else model
         
-        # 1. Compute validation loss (for monitoring)
+        # 1. Compute validation loss (for model selection and early stopping)
         val_loss = evaluate_loss(eval_model, val_loader, device, epoch, cfg)
         
-        # 2. Compute COCO metrics (for model selection)
+        # 2. Compute COCO metrics (for monitoring)
         log.info("Running COCO evaluation on validation set...")
         coco_metrics = evaluate_coco(eval_model, val_loader, device, coco_gt)
         
@@ -603,12 +602,9 @@ def main(cfg: DictConfig):
         # PyTorch reference: Step scheduler per-epoch (after validation)
         scheduler.step()
         
-        # Save checkpoint if best mAP (following torchvision's approach of using AP for model selection)
-        current_map = coco_metrics['AP']  # AP @ IoU=0.50:0.95
-        
-        if current_map > best_map:
-            best_map = current_map
-            best_map50 = coco_metrics['AP50']
+        # Save checkpoint if best validation loss
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
             checkpoint_path = Path(cfg.logging.save_dir) / 'best_model.pth'
             
             checkpoint_dict = {
@@ -616,21 +612,19 @@ def main(cfg: DictConfig):
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
                 'scheduler_state_dict': scheduler.state_dict(),
-                'val_loss': val_loss,
+                'val_loss': best_val_loss,
                 'coco_metrics': coco_metrics,
-                'best_map': best_map,
-                'best_map50': best_map50,
             }
             
             if model_ema is not None:
                 checkpoint_dict['model_ema_state_dict'] = model_ema.state_dict()
             
             torch.save(checkpoint_dict, checkpoint_path)
-            log.info(f'✓ New best model! AP: {best_map:.4f} (AP50: {best_map50:.4f}) - Saved to {checkpoint_path}')
+            log.info(f'✓ New best model! Val Loss: {best_val_loss:.4f} (AP: {coco_metrics["AP"]:.4f}) - Saved to {checkpoint_path}')
             patience_counter = 0
         else:
             patience_counter += 1
-            log.info(f'  No improvement (best AP: {best_map:.4f}), patience: {patience_counter}/{cfg.training.early_stopping_patience}')
+            log.info(f'  No improvement (best val loss: {best_val_loss:.4f}), patience: {patience_counter}/{cfg.training.early_stopping_patience}')
         
         log.info("=" * 80)
         
@@ -641,14 +635,14 @@ def main(cfg: DictConfig):
     
     writer.close()
     log.info("Training complete!")
-    log.info(f"Best mAP: {best_map:.4f} (AP50: {best_map50:.4f})")
+    log.info(f"Best val loss: {best_val_loss:.4f}")
     log.info(f"Results and model available in run directory: {cfg.logging.save_dir}")
     
     # Cleanup for Optuna
     gc.collect()
     torch.cuda.empty_cache()
     
-    return best_map  # Return mAP instead of loss for hyperparameter optimization
+    return best_val_loss
 
 
 if __name__ == "__main__":
