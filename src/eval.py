@@ -1,7 +1,6 @@
 import json
 import logging
 import multiprocessing as mp
-import random
 from pathlib import Path
 
 import hydra
@@ -9,6 +8,7 @@ import matplotlib.patches as patches
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
+from hydra.core.hydra_config import HydraConfig
 from hydra.utils import get_original_cwd
 from omegaconf import DictConfig, OmegaConf
 from pycocotools.coco import COCO
@@ -187,11 +187,8 @@ def evaluate_model(model, data_loader, cfg: DictConfig, device: torch.device):
     """
     model.eval()
     
-    # Visualize random samples
-    num_images_to_visualize = 7 
-    total_images = len(data_loader.dataset)
-    images_to_plot = set(random.sample(range(total_images), min(num_images_to_visualize, total_images)))
-    vis_dir = Path(cfg.logging.save_dir) / "visualizations"
+    visualize = cfg.evaluation.get("visualize", False)
+    vis_dir = Path(cfg.logging.save_dir) / "visualizations" if visualize else None
     
     # Track confidence score statistics for reporting
     all_scores = []
@@ -204,19 +201,16 @@ def evaluate_model(model, data_loader, cfg: DictConfig, device: torch.device):
         for batch_idx, (images, targets) in enumerate(tqdm(data_loader, desc="Evaluating")):
             outputs = model(images)
             
-            # Visualize random sample of images
-            for i in range(len(images)):
-                global_image_idx = batch_idx * cfg.training.batch_size + i
-                if global_image_idx in images_to_plot:
+            if visualize:
+                for i in range(len(images)):
                     visualize_predictions(
-                        images[i], 
+                        images[i],
                         outputs[i],
                         targets[i],
                         cfg=cfg,
-                        output_dir=vis_dir, 
+                        output_dir=vis_dir,
                         title=f"Image {targets[i]['image_id']}",
                     )
-                    images_to_plot.remove(global_image_idx)
             
             # Process each image's predictions for confidence stats and COCO collection
             for img_idx, (target, output) in enumerate(zip(targets, outputs)):
@@ -332,32 +326,22 @@ def main(cfg: DictConfig):
     
     log.info(f"Loading training config from: {training_config_path}")
     training_cfg = OmegaConf.load(training_config_path)
-    OmegaConf.set_struct(training_cfg, False)
     
-    # Store eval-specific and CLI overrides before replacing config
-    # We want to preserve: evaluation, dataset_dir, run_dir, checkpoint_path, and any CLI overrides
-    eval_specific = {
-        'evaluation': cfg.get('evaluation', {}),
-        'dataset_dir': cfg.get('dataset_dir'),
-        'run_dir': cfg.get('run_dir'),
-        'checkpoint_path': cfg.get('checkpoint_path'),
-    }
+    # Merge: training config (base) → eval defaults → CLI overrides (highest priority).
+    # Using HydraConfig.overrides.task ensures ALL CLI args (e.g.
+    # model.transform.image_mean) survive the config replacement.
+    eval_defaults = OmegaConf.create({
+        'evaluation': OmegaConf.to_container(cfg.get('evaluation', {}), resolve=True),
+    })
+    cli_overrides = list(HydraConfig.get().overrides.task)
+    cli_cfg = OmegaConf.from_dotlist(cli_overrides) if cli_overrides else OmegaConf.create()
     
-    # Start with training config as base (preserves model architecture, classes, etc.)
-    cfg = training_cfg
+    cfg = OmegaConf.merge(training_cfg, eval_defaults, cli_cfg)
     OmegaConf.set_struct(cfg, False)
     
-    # Apply eval-specific settings and CLI overrides on top
-    if eval_specific.get('evaluation'):
-        cfg.evaluation = eval_specific['evaluation']
-    if eval_specific.get('dataset_dir'):
-        cfg.dataset_dir = eval_specific['dataset_dir']
-    if eval_specific.get('run_dir'):
-        cfg.run_dir = eval_specific['run_dir']
-    if eval_specific.get('checkpoint_path'):
-        cfg.checkpoint_path = eval_specific['checkpoint_path']
-    
     log.info(f"Loaded training config from run: {run_dir.name}")
+    if cli_overrides:
+        log.info(f"CLI overrides applied: {cli_overrides}")
     
     # Set dataset paths (always override with dataset_dir)
     cfg.dataset.data.test_jsonl = str(dataset_jsonl)
