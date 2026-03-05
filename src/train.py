@@ -649,7 +649,6 @@ def main(cfg: DictConfig):
             factor=lr_factor,
             patience=lr_patience,
             min_lr=lr_min,
-            verbose=False,
         )
         log.info(f"Scheduler: ReduceLROnPlateau (patience={lr_patience}, factor={lr_factor}, min_lr={lr_min})")
     else:
