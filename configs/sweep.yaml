@@ -6,7 +6,7 @@
 # Hydra Optuna Sweeper Configuration
 hydra:
   sweep:
-    dir: outputs/${now:%Y-%m-%d}/lr${training.learning_rate}_bs${training.batch_size}x${training.gradient_accumulation_steps}_steps${join_dash:${training.lr_steps}}_${basename:${dataset.data.train_dir}}_${now:%H-%M-%S}
+    dir: outputs/${now:%Y-%m-%d}/lr${training.learning_rate}_bs${training.batch_size}x${training.gradient_accumulation_steps}_${training.lr_scheduler}_${basename:${dataset.data.train_dir}}_${now:%H-%M-%S}
   sweeper:
     _target_: hydra_plugins.hydra_optuna_sweeper.optuna_sweeper.OptunaSweeper
     sampler:
@@ -23,8 +23,11 @@ hydra:
       
       # Hyperparameters to optimize (PyTorch reference style)
       training.learning_rate: tag(log, interval(1e-4, 1e-2))   # Search around 0.0025 (PyTorch default for 1 GPU)
-      # training.weight_decay: tag(log, interval(1e-6, 1e-3))    # Around 1e-4 base
-      # training.momentum: tag(uniform, interval(0.85, 0.95))    # Around 0.9 base
+      training.weight_decay: tag(log, interval(1e-6, 1e-3))    # Around 1e-4 base
+      training.gradient_clip: choice(0.0, 0.1, 1.0, 5.0)      # 0.0 = disabled
+      # training.lr_patience: int(interval(2, 7))                 # Epochs before reducing LR (ReduceLROnPlateau)
+      training.lr_factor: choice(0.1, 0.2, 0.5)                # LR reduction factor on plateau
+      # training.momentum: tag(uniform, interval(0.85, 0.95))   # Around 0.9 base (rarely worth sweeping)
 
 defaults:
   - model: faster_rcnn  # Choose: faster_rcnn, ssdlite, effnet
@@ -58,11 +61,14 @@ training:
   norm_weight_decay: null  # Weight decay for normalization layers (null = same as weight_decay)
   nesterov: false
   
-  # Learning rate schedule (PyTorch reference)
-  lr_scheduler: multisteplr  # Options: multisteplr, cosineannealinglr, cosine
-  lr_steps: [8, 11]  # Reduce LR at these epochs (adjusted for shorter training)
-  lr_gamma: 0.1  # Multiply LR by this factor
+  # Learning rate schedule
+  lr_scheduler: reducelronplateau  # Options: multisteplr, cosineannealinglr, reducelronplateau
+  lr_steps: [8, 11]  # Reduce LR at these epochs (for MultiStepLR)
+  lr_gamma: 0.1  # Multiply LR by this factor (for MultiStepLR)
   lr_eta_min: 0.0  # Minimum learning rate (for CosineAnnealingLR)
+  lr_patience: 3  # Epochs before reducing LR (for ReduceLROnPlateau, overridden by Optuna)
+  lr_factor: 0.1  # LR reduction factor on plateau (for ReduceLROnPlateau, overridden by Optuna)
+  lr_min: 0.0  # Minimum learning rate (for ReduceLROnPlateau)
   
   # Warmup settings (applied only in epoch 0)
   warmup_iters: 1000  # Number of iterations for warmup in first epoch
