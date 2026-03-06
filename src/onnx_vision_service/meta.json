@@ -1,0 +1,24 @@
+{
+  "$schema": "https://dl.viam.dev/module.schema.json",
+  "module_id": "viam:onnx-vision-service",
+  "visibility": "public",
+  "url": "https://github.com/viam-modules/torch-training-script",
+  "description": "A Viam vision service that runs object detection using an ONNX model. Uses only onnxruntime — no PyTorch needed at inference time.",
+  "models": [
+    {
+      "api": "rdk:service:vision",
+      "model": "viam:vision:onnx-detector",
+      "short_description": "ONNX-based object detection service for Faster R-CNN models",
+      "markdown_link": "src/onnx_vision_service/README.md#viam-config"
+    }
+  ],
+  "applications": null,
+  "markdown_link": "src/onnx_vision_service/README.md",
+  "build": {
+    "setup": "make -C src/onnx_vision_service setup",
+    "build": "make -C src/onnx_vision_service dist/archive.tar.gz",
+    "path": "dist/archive.tar.gz",
+    "arch": ["linux/amd64", "linux/arm64", "darwin/arm64"]
+  },
+  "entrypoint": "onnx-vision-service"
+}

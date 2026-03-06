@@ -1,5 +1,10 @@
 #!/bin/bash
-# build.sh — Build the ONNX Vision Service module into a single executable.
+# build.sh — Quick local build of the ONNX Vision Service module.
+#
+# NOTE: The canonical build path for CI and registry publishing is:
+#   make -C src/onnx_vision_service dist/archive.tar.gz
+#
+# This script is kept for convenience during local development.
 #
 # Usage (from the repo root):
 #   bash src/onnx_vision_service/build.sh
