@@ -4,6 +4,7 @@ Shared between training and evaluation scripts.
 """
 import io
 import logging
+from collections import defaultdict
 from contextlib import redirect_stdout
 from typing import Dict, List, Optional
 
@@ -185,6 +186,120 @@ def evaluate_coco_predictions(
         'ARs': coco_eval.stats[9],     # AR for small objects
         'ARm': coco_eval.stats[10],    # AR for medium objects
         'ARl': coco_eval.stats[11],    # AR for large objects
+    }
+
+
+def _iou_xywh(box_a: List[float], box_b: List[float]) -> float:
+    """Compute IoU between two boxes in COCO [x, y, w, h] format."""
+    ax, ay, aw, ah = box_a
+    bx, by, bw, bh = box_b
+
+    inter_x1 = max(ax, bx)
+    inter_y1 = max(ay, by)
+    inter_x2 = min(ax + aw, bx + bw)
+    inter_y2 = min(ay + ah, by + bh)
+
+    inter_area = max(0.0, inter_x2 - inter_x1) * max(0.0, inter_y2 - inter_y1)
+    union_area = aw * ah + bw * bh - inter_area
+    if union_area <= 0:
+        return 0.0
+    return inter_area / union_area
+
+
+def compute_precision_recall(
+    predictions: List[Dict],
+    coco_gt: COCO,
+    iou_threshold: float = 0.5,
+    confidence_threshold: float = 0.5,
+) -> Dict:
+    """
+    Compute precision, recall, and F1 at a specific IoU and confidence threshold.
+
+    Uses greedy matching: predictions are sorted by score (descending) and each
+    is matched to the highest-IoU unmatched ground-truth box (if IoU >= threshold).
+
+    Args:
+        predictions: List of COCO-format prediction dicts
+                     (keys: image_id, category_id, bbox [x,y,w,h], score).
+        coco_gt: COCO ground-truth object.
+        iou_threshold: Minimum IoU to count a detection as a true positive.
+        confidence_threshold: Minimum score to consider a prediction.
+
+    Returns:
+        Dict with 'overall' (precision, recall, f1, tp, fp, fn) and
+        'per_class' keyed by category name with the same fields.
+    """
+    cat_id_to_name = {c['id']: c['name'] for c in coco_gt.dataset['categories']}
+    all_cat_ids = set(cat_id_to_name.keys())
+
+    # Filter predictions by confidence
+    preds = [p for p in predictions if p['score'] >= confidence_threshold]
+
+    # Group predictions by (image_id, category_id), sorted by score desc
+    pred_groups: Dict[tuple, List[Dict]] = defaultdict(list)
+    for p in preds:
+        pred_groups[(p['image_id'], p['category_id'])].append(p)
+    for key in pred_groups:
+        pred_groups[key].sort(key=lambda x: x['score'], reverse=True)
+
+    # Group ground-truth annotations by (image_id, category_id)
+    gt_groups: Dict[tuple, List[Dict]] = defaultdict(list)
+    for ann in coco_gt.dataset['annotations']:
+        gt_groups[(ann['image_id'], ann['category_id'])].append(ann)
+
+    # Collect all (image_id, category_id) keys from both predictions and GT
+    all_keys = set(pred_groups.keys()) | set(gt_groups.keys())
+
+    per_class_counts: Dict[int, Dict[str, int]] = {
+        cid: {'tp': 0, 'fp': 0, 'fn': 0} for cid in all_cat_ids
+    }
+
+    for key in all_keys:
+        img_id, cat_id = key
+        if cat_id not in all_cat_ids:
+            continue
+
+        gt_boxes = [ann['bbox'] for ann in gt_groups.get(key, [])]
+        matched = [False] * len(gt_boxes)
+
+        for pred in pred_groups.get(key, []):
+            best_iou = 0.0
+            best_idx = -1
+            for gi, gt_box in enumerate(gt_boxes):
+                if matched[gi]:
+                    continue
+                iou = _iou_xywh(pred['bbox'], gt_box)
+                if iou > best_iou:
+                    best_iou = iou
+                    best_idx = gi
+
+            if best_iou >= iou_threshold and best_idx >= 0:
+                per_class_counts[cat_id]['tp'] += 1
+                matched[best_idx] = True
+            else:
+                per_class_counts[cat_id]['fp'] += 1
+
+        per_class_counts[cat_id]['fn'] += sum(1 for m in matched if not m)
+
+    def _metrics(tp: int, fp: int, fn: int) -> Dict:
+        precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+        recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+        f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
+        return {'precision': precision, 'recall': recall, 'f1': f1, 'tp': tp, 'fp': fp, 'fn': fn}
+
+    per_class = {}
+    total_tp, total_fp, total_fn = 0, 0, 0
+    for cid, counts in per_class_counts.items():
+        per_class[cat_id_to_name[cid]] = _metrics(counts['tp'], counts['fp'], counts['fn'])
+        total_tp += counts['tp']
+        total_fp += counts['fp']
+        total_fn += counts['fn']
+
+    return {
+        'overall': _metrics(total_tp, total_fp, total_fn),
+        'per_class': per_class,
+        'iou_threshold': iou_threshold,
+        'confidence_threshold': confidence_threshold,
     }
 
 

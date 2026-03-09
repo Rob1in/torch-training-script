@@ -19,7 +19,7 @@ from datasets.viam_dataset import ViamDataset
 from models.faster_rcnn_detector import FasterRCNNDetector
 from models.ssdlite_detector import SSDLiteDetector
 from utils.coco_converter import jsonl_to_coco
-from utils.coco_eval import convert_to_xywh, evaluate_coco_predictions
+from utils.coco_eval import compute_precision_recall, convert_to_xywh, evaluate_coco_predictions
 from utils.transforms import GPUCollate, build_transforms
 
 try:
@@ -555,6 +555,28 @@ def main(cfg: DictConfig):
         verbose=True
     )
     
+    # Precision / Recall at the configured operating point
+    iou_thr = cfg.evaluation.get("iou_threshold", 0.5)
+    conf_thr = cfg.evaluation.confidence_threshold
+    log.info("="*80)
+    log.info(f"Precision/Recall (IoU>={iou_thr}, confidence>={conf_thr})")
+    log.info("="*80)
+    pr_results = compute_precision_recall(
+        predictions=predictions,
+        coco_gt=coco_gt,
+        iou_threshold=iou_thr,
+        confidence_threshold=conf_thr,
+    )
+
+    ov = pr_results['overall']
+    log.info(f"  {'Class':<20s}  {'Prec':>6s}  {'Rec':>6s}  {'F1':>6s}  {'TP':>5s}  {'FP':>5s}  {'FN':>5s}")
+    log.info(f"  {'-'*20}  {'-'*6}  {'-'*6}  {'-'*6}  {'-'*5}  {'-'*5}  {'-'*5}")
+    for cls_name in sorted(pr_results['per_class']):
+        c = pr_results['per_class'][cls_name]
+        log.info(f"  {cls_name:<20s}  {c['precision']:6.3f}  {c['recall']:6.3f}  {c['f1']:6.3f}  {c['tp']:5d}  {c['fp']:5d}  {c['fn']:5d}")
+    log.info(f"  {'-'*20}  {'-'*6}  {'-'*6}  {'-'*6}  {'-'*5}  {'-'*5}  {'-'*5}")
+    log.info(f"  {'OVERALL':<20s}  {ov['precision']:6.3f}  {ov['recall']:6.3f}  {ov['f1']:6.3f}  {ov['tp']:5d}  {ov['fp']:5d}  {ov['fn']:5d}")
+
     # Add metadata to metrics
     metrics['checkpoint'] = str(checkpoint_path)
     metrics['num_predictions'] = len(predictions)
@@ -563,6 +585,7 @@ def main(cfg: DictConfig):
         'jsonl': str(cfg.dataset.data.test_jsonl),
         'data_dir': str(cfg.dataset.data.test_data_dir)
     }
+    metrics['precision_recall'] = pr_results
     
     # Save metrics with appropriate filename
     model_type = "onnx" if is_onnx else cfg.model.name
@@ -576,6 +599,9 @@ def main(cfg: DictConfig):
     log.info(f"  AP (IoU=0.50:0.95): {metrics['AP']:.4f}")
     log.info(f"  AP50 (IoU=0.50):    {metrics['AP50']:.4f}")
     log.info(f"  AP75 (IoU=0.75):    {metrics['AP75']:.4f}")
+    log.info(f"  Precision (IoU>={iou_thr}, conf>={conf_thr}): {ov['precision']:.4f}")
+    log.info(f"  Recall    (IoU>={iou_thr}, conf>={conf_thr}): {ov['recall']:.4f}")
+    log.info(f"  F1        (IoU>={iou_thr}, conf>={conf_thr}): {ov['f1']:.4f}")
     log.info("="*80)
 
 if __name__ == "__main__":

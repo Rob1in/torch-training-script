@@ -8,7 +8,8 @@ defaults:
 
 # Evaluation settings
 evaluation:
-  confidence_threshold: 0.7  # Threshold for visualization (not used for COCO metrics)
+  confidence_threshold: 0.7  # Threshold for visualization and precision/recall
+  iou_threshold: 0.5         # IoU threshold for precision/recall matching
   visualize: false  # Set to true to save bbox visualizations for ALL images
 
 # Dataset directory for evaluation (required, must be provided via CLI)
