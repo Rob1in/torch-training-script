@@ -25,7 +25,7 @@ hydra:
       training.learning_rate: tag(log, interval(5e-3, 5e-2))   # Search around 0.02
       training.weight_decay: tag(log, interval(1e-6, 1e-3))    # Around 1e-4 base
       training.gradient_clip: choice(0.0, 0.1, 1.0, 5.0)      # 0.0 = disabled
-      # training.lr_patience: int(interval(2, 7))                 # Epochs before reducing LR (ReduceLROnPlateau)
+      training.lr_patience: int(interval(2, 7))                 # Epochs before reducing LR (ReduceLROnPlateau)
       training.lr_factor: choice(0.1, 0.2, 0.5)                # LR reduction factor on plateau
       # training.momentum: tag(uniform, interval(0.85, 0.95))   # Around 0.9 base (rarely worth sweeping)
 
