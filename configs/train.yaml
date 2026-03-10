@@ -104,7 +104,7 @@ training:
 
 hydra:
   run:
-    dir: outputs/${now:%Y-%m-%d}/lr${fmt:${training.learning_rate}}_bs${training.batch_size}x${training.gradient_accumulation_steps}_${training.lr_scheduler}_${basename:${dataset.data.train_dir}}_${now:%H-%M-%S}
+    dir: outputs/${now:%Y-%m-%d}/lr${fmt:${training.learning_rate}}_bs${training.batch_size}x${training.gradient_accumulation_steps}_sz${join_dash:${model.transform.input_size}}_${training.lr_scheduler}_${basename:${dataset.data.train_dir}}_${now:%H-%M-%S}
 
 # Logging
 logging:
