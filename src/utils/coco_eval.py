@@ -8,6 +8,7 @@ from collections import defaultdict
 from contextlib import redirect_stdout
 from typing import Dict, List, Optional
 
+import numpy as np
 import torch
 from pycocotools.coco import COCO
 from pycocotools.cocoeval import COCOeval
@@ -301,6 +302,123 @@ def compute_precision_recall(
         'iou_threshold': iou_threshold,
         'confidence_threshold': confidence_threshold,
     }
+
+
+def compute_det_curves(
+    predictions: List[Dict],
+    coco_gt: COCO,
+    iou_threshold: float = 0.5,
+) -> Dict:
+    """
+    Compute precision-recall curve data for object detection.
+
+    For each (image, category) pair, predictions are sorted by confidence
+    (descending) and greedily matched to ground-truth boxes.  Each prediction
+    is labelled TP or FP.  The cumulative counts as a function of the
+    confidence threshold give the precision-recall curve.
+
+    Returns a dict with 'overall' and 'per_class' entries, each containing
+    precision / recall / scores arrays plus the interpolated AP.
+    """
+    cat_id_to_name = {c['id']: c['name'] for c in coco_gt.dataset['categories']}
+    all_cat_ids = set(cat_id_to_name.keys())
+
+    gt_count_per_cat: Dict[int, int] = defaultdict(int)
+    gt_groups: Dict[tuple, List[Dict]] = defaultdict(list)
+    for ann in coco_gt.dataset['annotations']:
+        gt_count_per_cat[ann['category_id']] += 1
+        gt_groups[(ann['image_id'], ann['category_id'])].append(ann)
+
+    pred_groups: Dict[tuple, List[Dict]] = defaultdict(list)
+    for p in predictions:
+        pred_groups[(p['image_id'], p['category_id'])].append(p)
+    for key in pred_groups:
+        pred_groups[key].sort(key=lambda x: x['score'], reverse=True)
+
+    # Greedy matching: label each prediction as TP or FP
+    per_cat_dets: Dict[int, List[tuple]] = defaultdict(list)
+
+    all_keys = set(pred_groups.keys()) | set(gt_groups.keys())
+    for key in all_keys:
+        _, cat_id = key
+        if cat_id not in all_cat_ids:
+            continue
+
+        gt_boxes = [ann['bbox'] for ann in gt_groups.get(key, [])]
+        matched = [False] * len(gt_boxes)
+
+        for pred in pred_groups.get(key, []):
+            best_iou, best_idx = 0.0, -1
+            for gi, gt_box in enumerate(gt_boxes):
+                if matched[gi]:
+                    continue
+                iou = _iou_xywh(pred['bbox'], gt_box)
+                if iou > best_iou:
+                    best_iou = iou
+                    best_idx = gi
+
+            is_tp = best_iou >= iou_threshold and best_idx >= 0
+            if is_tp:
+                matched[best_idx] = True
+            per_cat_dets[cat_id].append((pred['score'], is_tp))
+
+    def _build_curve(scores_arr, tp_arr, n_gt):
+        """Return precision, recall, scores, and interpolated AP."""
+        if len(scores_arr) == 0:
+            return {'precision': [], 'recall': [], 'scores': [], 'n_gt': n_gt, 'ap': 0.0}
+
+        order = np.argsort(-scores_arr)
+        scores_sorted = scores_arr[order]
+        tp_sorted = tp_arr[order]
+
+        cum_tp = np.cumsum(tp_sorted)
+        cum_fp = np.cumsum(~tp_sorted)
+
+        precision = cum_tp / (cum_tp + cum_fp)
+        recall = cum_tp / n_gt if n_gt > 0 else np.zeros_like(cum_tp, dtype=float)
+
+        # All-points interpolated AP
+        rec = np.concatenate([[0.0], recall, [recall[-1]]])
+        prec = np.concatenate([[1.0], precision, [0.0]])
+        for i in range(len(prec) - 2, -1, -1):
+            prec[i] = max(prec[i], prec[i + 1])
+        ap = float(np.sum((rec[1:] - rec[:-1]) * prec[1:]))
+
+        return {
+            'precision': precision.tolist(),
+            'recall': recall.tolist(),
+            'scores': scores_sorted.tolist(),
+            'n_gt': n_gt,
+            'ap': ap,
+        }
+
+    result: Dict = {'per_class': {}, 'iou_threshold': iou_threshold}
+
+    all_scores_list: list = []
+    all_tp_list: list = []
+
+    for cat_id in sorted(all_cat_ids):
+        dets = per_cat_dets.get(cat_id, [])
+        n_gt = gt_count_per_cat.get(cat_id, 0)
+        cat_name = cat_id_to_name[cat_id]
+        if not dets and n_gt == 0:
+            continue
+
+        scores = np.array([d[0] for d in dets])
+        tp_flags = np.array([d[1] for d in dets], dtype=bool)
+        result['per_class'][cat_name] = _build_curve(scores, tp_flags, n_gt)
+
+        all_scores_list.extend(scores.tolist())
+        all_tp_list.extend(tp_flags.tolist())
+
+    total_gt = sum(gt_count_per_cat.values())
+    result['overall'] = _build_curve(
+        np.array(all_scores_list),
+        np.array(all_tp_list, dtype=bool),
+        total_gt,
+    )
+
+    return result
 
 
 def evaluate_coco(

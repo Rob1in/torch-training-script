@@ -11,6 +11,11 @@ evaluation:
   confidence_threshold: 0.7  # Threshold for visualization and precision/recall
   iou_threshold: 0.5         # IoU threshold for precision/recall matching
   visualize: false  # Set to true to save bbox visualizations for ALL images
+  visualize_labels: null  # List of label names to draw (null = all labels)
+  visualize_only_with_predictions: false  # Only save images that have at least one prediction
+  batch_size: null  # Override training batch size for eval (null = use training config value, ignored for ONNX)
+  device: null  # Override device for eval (null = auto-detect: CUDA > MPS > CPU, ONNX only supports CUDA/CPU)
+  plot_roc: false  # Set to true to save a precision-recall curve plot
 
 # Dataset directory for evaluation (required, must be provided via CLI)
 dataset_dir: null
