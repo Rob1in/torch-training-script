@@ -170,12 +170,14 @@ def compute_class_stats(
     return stats
 
 
-def print_table(title: str, stats: dict[str, dict]) -> None:
+def print_table(title: str, stats: dict[str, dict], show_split: bool = True) -> None:
     if not stats:
         print(f"\n{title}: (none)")
         return
 
-    headers = ["class", "bboxes", "images", "sequences", "no_seq_imgs", "train_seqs", "val_seqs"]
+    headers = ["class", "bboxes", "images", "sequences", "no_seq_imgs"]
+    if show_split:
+        headers += ["train_seqs", "val_seqs"]
     rows = sorted(stats.items(), key=lambda kv: -kv[1]["bboxes"])
 
     name_w = max(len(headers[0]), max(len(name) for name, _ in rows))
@@ -199,6 +201,8 @@ def main() -> None:
     parser.add_argument("dataset_dirs", nargs="+", type=Path, help="One or more directories containing dataset.jsonl")
     parser.add_argument("--others", action="store_true",
                         help=f"Show only labels that DON'T match prefix '{CLASS_PREFIX}' (sanity check).")
+    parser.add_argument("--test-set", action="store_true",
+                        help="Treat input as a held-out test set: skip the train/val sequence projection.")
     parser.add_argument("--val-split", type=float, default=0.2,
                         help="Fraction of images projected into val split (default: 0.2, matches train.yaml).")
     parser.add_argument("--seed", type=int, default=42,
@@ -220,23 +224,28 @@ def main() -> None:
         f"{len(images) - n_with_seq} without."
     )
 
-    train_seqs, val_seqs = project_split(images, args.val_split, args.seed)
-    if train_seqs or val_seqs:
-        print(
-            f"Sequence-aware split projection (val_split={args.val_split}, seed={args.seed}): "
-            f"{len(train_seqs)} train sequences, {len(val_seqs)} val sequences."
-        )
+    if args.test_set:
+        print("Test-set mode: train/val projection skipped.")
+        train_seqs, val_seqs = set(), set()
     else:
-        print("No sequence_ids present — train/val projection skipped (all images would land in train).")
+        train_seqs, val_seqs = project_split(images, args.val_split, args.seed)
+        if train_seqs or val_seqs:
+            print(
+                f"Sequence-aware split projection (val_split={args.val_split}, seed={args.seed}): "
+                f"{len(train_seqs)} train sequences, {len(val_seqs)} val sequences."
+            )
+        else:
+            print("No sequence_ids present — train/val projection skipped (all images would land in train).")
 
     stats = compute_class_stats(images, train_seqs, val_seqs)
+    show_split = not args.test_set
 
     if args.others:
         others = {k: v for k, v in stats.items() if not k.startswith(CLASS_PREFIX)}
-        print_table(f"Other bbox labels (not matching prefix '{CLASS_PREFIX}')", others)
+        print_table(f"Other bbox labels (not matching prefix '{CLASS_PREFIX}')", others, show_split=show_split)
     else:
         matched = {k: v for k, v in stats.items() if k.startswith(CLASS_PREFIX)}
-        print_table(f"Classes (prefix '{CLASS_PREFIX}')", matched)
+        print_table(f"Classes (prefix '{CLASS_PREFIX}')", matched, show_split=show_split)
 
 
 if __name__ == "__main__":
