@@ -11,6 +11,10 @@ name: jsonl
 data:
   train_dir: null   # Required: directory containing dataset.jsonl + data/
   val_dir: null     # Optional: if null, auto-split from train_dir (see training.val_split)
+  # Optional: list of sequence_ids to keep from the training set. Used by
+  # src/learning_curve.py to subsample without rewriting the dataset on disk.
+  # Only takes effect when val_dir is set (separate-val branch of prepare_data).
+  train_sequence_ids: null
 
 # Normalization statistics for the model's internal GeneralizedRCNNTransform.
 # These override model.transform.image_mean/std before model creation, so the

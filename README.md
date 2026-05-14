@@ -17,6 +17,7 @@ A PyTorch-based object detection training pipeline supporting Faster R-CNN and S
   - [Training Hyperparameters](#training-hyperparameters)
   - [Output Directories](#output-directories)
 - [Evaluation](#evaluation)
+- [Learning Curve Study](#learning-curve-study)
 - [Visualization (standalone)](#visualization-standalone)
 - [ONNX Conversion](#onnx-conversion)
 - [Viam Vision Service](#viam-vision-service)
@@ -437,6 +438,109 @@ The evaluation script reports:
 2. Scales predictions to original image dimensions
 3. Evaluates using pycocotools
 4. Saves results and visualizations
+
+## Learning Curve Study
+
+`src/learning_curve.py` answers the question **"is it worth labeling more data?"**
+It trains the same model recipe at several training-set sizes against a fixed
+held-out validation set, then plots AP50 as a function of (a) the number of
+sequences and (b) the number of images used in training.
+
+The two x-axes are useful because images within a sequence are highly
+correlated (consecutive frames of the same scene). Plotting both axes from the
+same set of runs lets you read off "with N sequences = M images, we get AP50 =
+X" — directly informing labeling-effort decisions.
+
+**How it works:**
+1. Discovers all sequences in `<train-dir>/dataset.jsonl` (records without a
+   `sequence_id` are excluded entirely from the study).
+2. Holds out a fixed fraction of sequences as validation. The val set is
+   materialized once with symlinked images at
+   `outputs/learning_curve_<ts>/val_holdout/` and reused across all runs so
+   every grid point is measured against identical val data.
+3. Builds a **geometric grid** over the remaining "pool" of sequences (e.g.
+   `[2, 4, 9, 19, 41, 90]`). Subsets are **nested** — each grid point's
+   training set is a superset of the smaller ones — so the curve is not
+   confounded by which sequences happen to land in each subset.
+4. For each grid point, invokes `python src/train.py` as a subprocess with
+   `dataset.data.train_sequence_ids=[...]`, `dataset.data.val_dir=<holdout>`,
+   and any extra Hydra overrides you pass via `--train-extra`.
+5. Reads each run's `final_metrics.json` (written at the end of `train.py`)
+   to extract the best epoch's COCO metrics. Failed runs are logged and the
+   sweep continues.
+6. Plots two subplots side-by-side (AP50 / AP / AP75 vs #sequences and vs
+   #images, log x-axis).
+
+**Argument convention:** wrapper-specific flags (`--train-dir`, `--grid`, …)
+come first. Anything else is forwarded as a Hydra override to `train.py` —
+write it the same way you would on a `python src/train.py …` command line.
+
+**Basic usage:**
+```bash
+python src/learning_curve.py --train-dir omni_2.17_train
+```
+
+**Realistic usage (with the omni-detector recipe):**
+```bash
+python src/learning_curve.py --train-dir omni_2.17_train \
+    model=faster_rcnn \
+    training.num_epochs=50 \
+    training.batch_size=16 \
+    'model.transform.input_size=[480,640]' \
+    'classes=[human_annotated_positive_fish_blob,triangle]' \
+    'dataset.normalization.image_mean=[0.047306,0.042015,0.444843]' \
+    'dataset.normalization.image_std=[0.140571,0.134107,0.159125]'
+```
+
+**Common wrapper arguments:**
+- `--train-dir <dir>`: Required. Full training dataset (jsonl + data/).
+- `--val-fraction <f>`: Fraction of sequences held out for val (default 0.2).
+- `--grid 2 5 10 20 40`: Override the geometric grid with explicit sequence
+  counts.
+- `--grid-points <n>`: Number of geometric points if `--grid` not given
+  (default 6).
+- `--seed <n>`: Seed for val/pool/grid-subset selection (default 42). Use the
+  same seed to reproduce a study; vary it to add seeded replicates at small
+  sizes.
+
+Hyperparameters are held constant across grid points by design — small-data
+runs rely on the existing val-loss early stopping
+(`training.early_stopping_patience`) rather than per-size retuning. Pass any
+Hydra override after the wrapper flags to pin the training recipe (model,
+classes, normalization, epochs, …).
+
+**Output layout:**
+```
+outputs/learning_curve_<timestamp>/
+├── val_holdout/              ← fixed held-out val (jsonl + symlinked images)
+│   ├── dataset.jsonl
+│   └── data/
+├── runs/
+│   ├── n_seq=2/              ← full Hydra run dir for this grid point
+│   │   ├── .hydra/config.yaml
+│   │   ├── best_model.pth
+│   │   ├── final_metrics.json   ← machine-readable summary
+│   │   └── tensorboard/
+│   ├── n_seq=5/
+│   └── ...
+├── manifest.json             ← which sequences went where, grid, seed, run statuses
+├── results.json              ← [{n_sequences, n_images, AP50, AP, AP75, run_dir}, ...]
+└── learning_curve.png        ← the plot
+```
+
+`results.json` is written incrementally after each run so a mid-sweep crash
+does not lose the runs that completed. `manifest.json` records the val and
+pool sequence IDs explicitly — useful if you want to re-run a single grid
+point manually without changing the val/train split.
+
+**Interpreting the curve:**
+- **Steep, no plateau** → more data clearly helps; budget for more labels.
+- **Plateau** → returns have diminished; collecting more sequences is unlikely
+  to move AP50 much, so spend the labeling budget elsewhere (different
+  classes, harder sequences, error-mining).
+- **The two subplots will be similar in shape** because images and sequences
+  scale together when you subsample by sequence — but the x-axis units differ
+  and that's what makes them useful for budgeting.
 
 ## Visualization (standalone)
 
