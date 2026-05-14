@@ -1,5 +1,6 @@
 #training script for object detection models
 import gc
+import json
 import logging
 import math
 import random
@@ -342,6 +343,26 @@ def prepare_data(cfg: DictConfig):
             data_dir=str(val_data_dir),
             classes=classes,
         )
+
+        # Optional: filter the train set down to specified sequence IDs.
+        # Used by src/learning_curve.py to subsample the training data
+        # without rewriting it to disk.
+        keep_seq_ids = cfg.dataset.data.get('train_sequence_ids')
+        if keep_seq_ids:
+            keep = set(keep_seq_ids)
+            before = len(train_dataset.samples)
+            train_dataset.samples = [
+                s for s in train_dataset.samples if s.get('sequence_id') in keep
+            ]
+            log.info(
+                f"train_sequence_ids filter: kept {len(keep)} sequences -> "
+                f"{len(train_dataset.samples)} images (was {before})"
+            )
+            if len(train_dataset.samples) == 0:
+                raise ValueError(
+                    "train_sequence_ids filter produced 0 training samples. "
+                    "Check that the sequence IDs match what's in the dataset."
+                )
     else:
         val_split = cfg.training.get('val_split', 0.2)
         strategy = cfg.training.get('val_split_strategy', 'sequence')
@@ -674,6 +695,8 @@ def main(cfg: DictConfig):
     # Training loop
     writer = SummaryWriter(Path(cfg.logging.save_dir) / 'tensorboard')
     best_val_loss = float('inf')
+    best_coco_metrics = None
+    best_epoch = -1
     patience_counter = 0
     
     log.info("Starting training...")
@@ -730,6 +753,8 @@ def main(cfg: DictConfig):
         # Save checkpoint if best validation loss
         if val_loss < best_val_loss:
             best_val_loss = val_loss
+            best_coco_metrics = coco_metrics
+            best_epoch = epoch + 1
             checkpoint_path = Path(cfg.logging.save_dir) / 'best_model.pth'
             
             checkpoint_dict = {
@@ -762,11 +787,26 @@ def main(cfg: DictConfig):
     log.info("Training complete!")
     log.info(f"Best val loss: {best_val_loss:.4f}")
     log.info(f"Results and model available in run directory: {cfg.logging.save_dir}")
-    
+
+    # Stable contract for downstream tools (e.g. src/learning_curve.py):
+    # write the best epoch's val metrics to final_metrics.json in the run dir.
+    final_metrics_path = Path(cfg.logging.save_dir) / 'final_metrics.json'
+    final_metrics = {
+        'best_val_loss': float(best_val_loss),
+        'best_coco_metrics': best_coco_metrics,
+        'best_epoch': best_epoch,
+        'completed_epochs': epoch + 1,
+        'num_train_samples': len(train_dataset),
+        'num_val_samples': len(val_dataset),
+    }
+    with open(final_metrics_path, 'w') as f:
+        json.dump(final_metrics, f, indent=2, default=float)
+    log.info(f"Wrote final metrics to {final_metrics_path}")
+
     # Cleanup for Optuna
     gc.collect()
     torch.cuda.empty_cache()
-    
+
     return best_val_loss
 
 
