@@ -9,7 +9,6 @@ import random
 from typing import Dict, List, Optional, Tuple
 
 import torch
-from torchvision import transforms
 import cv2
 import numpy as np
 import torchvision.transforms.functional as F
@@ -19,7 +18,7 @@ log = logging.getLogger(__name__)
 
 
 class DetectionTransform:
-    """Transform that applies augmentations to both images and bounding boxes."""
+    """CPU-side transform that applies augmentations to both images and bounding boxes."""
 
     def __init__(self, transforms: List[Dict]):
         self.transforms = transforms
@@ -187,18 +186,17 @@ class DetectionTransform:
 
 
 class GPUCollate:
-    """Collate function that applies transforms on GPU and batches data."""
+    """Collate function that moves CPU-transformed samples to the target device."""
 
-    def __init__(self, device: torch.device, transform: Optional[DetectionTransform] = None):
+    def __init__(self, device: torch.device):
         self.device = device
-        self.transform = transform
 
     def __call__(self, batch: List[Tuple[torch.Tensor, Dict]]) -> Tuple[torch.Tensor, List[Dict]]:
         """
         Collate batch of samples.
 
         Args:
-            batch: List of (image, target) tuples
+            batch: List of (image, target) tuples with CPU tensors
 
         Returns:
             Batched images tensor [B, C, H, W] and list of targets
@@ -207,29 +205,46 @@ class GPUCollate:
         targets = []
 
         for image, target in batch:
-            # Move to device
-            image = image.to(self.device)
+            image_on_device = image.to(self.device)
 
-            # Apply transforms if provided
-            if self.transform is not None:
-                image, target = self.transform(image, target)
-
-            # Move target tensors to device
             target_on_device = {}
             for key, value in target.items():
                 if isinstance(value, torch.Tensor):
                     target_on_device[key] = value.to(self.device)
                 else:
                     target_on_device[key] = value
-            target = target_on_device
 
-            images.append(image)
-            targets.append(target)
+            images.append(image_on_device)
+            targets.append(target_on_device)
 
-        # Stack images into batch tensor (assumes all images have same size after transforms)
         images = torch.stack(images, dim=0)
 
         return images, targets
+
+
+def attach_dataset_transform(dataset, transform: Optional[DetectionTransform]):
+    """Attach a transform to a ViamDataset or Subset wrapping a ViamDataset.
+
+    Subsets get a shallow-cloned underlying dataset so train/val can use
+    different transforms without sharing mutable state.
+    """
+    from torch.utils.data import Subset
+
+    from datasets.viam_dataset import ViamDataset
+
+    if isinstance(dataset, Subset):
+        underlying = dataset.dataset
+        if not isinstance(underlying, ViamDataset):
+            raise TypeError(
+                f"Expected Subset of ViamDataset, got Subset of {type(underlying).__name__}"
+            )
+        return Subset(underlying.with_transform(transform), dataset.indices)
+
+    if isinstance(dataset, ViamDataset):
+        dataset.transform = transform
+        return dataset
+
+    raise TypeError(f"Unexpected dataset type: {type(dataset).__name__}")
 
 
 def compute_dataset_stats(
@@ -321,53 +336,62 @@ def build_transforms(
     return DetectionTransform(transform_config)
 
 
-def background_strip(image: torch.Tensor, dist: float = 150) -> torch.Tensor:
+def _background_strip_np(img_hwc_u8: np.ndarray, dist: float = 150) -> np.ndarray:
+    """Strip pixels within Euclidean distance ``dist`` of the k-means background.
+
+    Distance is computed in **8-bit RGB space** (values 0–255). Background color
+    is estimated via k-means on a resized 100×100 image.
+
+    Args:
+        img_hwc_u8: uint8 image of shape [H, W, 3] in RGB order.
+        dist: Euclidean distance threshold in 8-bit RGB space.
+
+    Returns:
+        uint8 image [H, W, 3] (zeros where stripped).
     """
-    Strip pixels within Euclidean distance ``dist`` of the k-means background.
-    Distance is computed in **8-bit RGB space** (values 0–255); internally the
-    image is quantized from **float32 in [0, 1]** like ``ToTensor`` output.
+    if not isinstance(img_hwc_u8, np.ndarray):
+        raise TypeError(f"Expected numpy.ndarray, got {type(img_hwc_u8)}")
+    if img_hwc_u8.ndim != 3 or img_hwc_u8.shape[2] != 3:
+        raise ValueError(f"Expected [H, W, 3], got shape {img_hwc_u8.shape}")
+    if img_hwc_u8.dtype != np.uint8:
+        raise ValueError(f"Expected dtype uint8, got {img_hwc_u8.dtype}")
 
-    **Input:** ``float32`` ``[3, H, W]``, values in ``[0, 1]``.
+    resized = cv2.resize(img_hwc_u8, (100, 100), interpolation=cv2.INTER_LINEAR)
+    data = (resized.astype(np.float32) / 255.0).reshape((-1, 3)).astype(np.float32)
 
-    **Output:** ``float32``, same shape and device; ``[0, 1]`` (zeros where stripped).
-    """
-    t = image
-    if t.dim() != 3 or t.shape[0] != 3:
-        raise ValueError(f"Expected [3, H, W], got shape {tuple(t.shape)}")
+    criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 100, 0.85)
+    _compactness, labels, centers = cv2.kmeans(
+        data, 5, None, criteria, 10, cv2.KMEANS_RANDOM_CENTERS
+    )
+    labels = labels.reshape(-1)
+    max_label = int(np.bincount(labels, minlength=centers.shape[0]).argmax())
+    background_color_01 = centers[max_label]
+    bg_rgb_255 = background_color_01 * 255.0
 
-    t01 = t.detach().float().clamp(0.0, 1.0)
-    rgb_u8_chw = (t01 * 255.0).round().clamp(0, 255).to(torch.uint8)
-    bkgnd = get_background_from_img_tensor(t01)
-
-    bg_rgb = torch.tensor(bkgnd, device=rgb_u8_chw.device, dtype=torch.float32).view(3, 1, 1)
-    diff = rgb_u8_chw.float() - bg_rgb
-    dist_sq_map = (diff * diff).sum(dim=0)  # (H,W)
+    diff = img_hwc_u8.astype(np.float32) - bg_rgb_255.reshape((1, 1, 3))
+    dist_sq_map = np.sum(diff * diff, axis=2)
     dist_sq = float(dist) * float(dist)
     mask = dist_sq_map <= dist_sq
 
-    result_u8 = rgb_u8_chw.clone()
-    result_u8[:, mask] = 0
-
-    out_t = result_u8.float().div_(255.0)
-    return out_t.to(dtype=torch.float32)
+    out = img_hwc_u8.copy()
+    out[mask] = 0
+    return out
 
 
-def get_background_from_img_tensor(img: torch.Tensor) -> torch.Tensor:
-    """Get the background color from an image using kmeans clustering.
-    Takes a torch tensor as input: (C, H, W) dtype float32 in [0, 1].
-    Returns the closest color string and the actual RGB vector in [0, 255]."""
+def background_strip(image: torch.Tensor, dist: float = 150) -> torch.Tensor:
+    """
+    Strip pixels within Euclidean distance ``dist`` of the k-means background.
 
-    resizedTensor = transforms.Resize((100, 100))(img)
-    resized = np.asarray(resizedTensor.permute(1, 2, 0).contiguous().cpu().numpy())
+    **Input:** ``float32`` ``[3, H, W]`` on CPU, values in ``[0, 1]``.
 
-    data = resized.reshape((-1, 3)).astype(np.float32)
-    criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 100, 0.85)
-    _, labels, centers = cv2.kmeans(data, 5, None, criteria, 10, cv2.KMEANS_RANDOM_CENTERS)
-    background_color = centers[0]
+    **Output:** ``float32`` ``[3, H, W]`` on CPU; ``[0, 1]`` (zeros where stripped).
+    """
+    if image.dim() != 3 or image.shape[0] != 3:
+        raise ValueError(f"Expected [3, H, W], got shape {tuple(image.shape)}")
 
-    label_count = {i: 0 for i in range(len(centers))}
-    for label in labels:
-        label_count[label[0]] += 1
-    max_label = max(label_count, key=label_count.get)
-    background_color = centers[max_label]
-    return background_color * 255
+    t01 = image.detach().float().clamp(0.0, 1.0)
+    rgb_u8_chw = (t01 * 255.0).round().clamp(0, 255).to(torch.uint8)
+    rgb_u8_hwc = rgb_u8_chw.permute(1, 2, 0).contiguous().numpy()
+    result_hwc = _background_strip_np(rgb_u8_hwc, dist=dist)
+    result_chw = torch.from_numpy(result_hwc.transpose(2, 0, 1).copy()).float().div_(255.0)
+    return result_chw

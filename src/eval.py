@@ -22,7 +22,7 @@ from models.retinanet_detector import RetinaNetDetector
 from models.ssdlite_detector import SSDLiteDetector
 from utils.coco_converter import jsonl_to_coco
 from utils.coco_eval import compute_det_curves, compute_precision_recall, convert_to_xywh, evaluate_coco_predictions
-from utils.transforms import GPUCollate, build_transforms
+from utils.transforms import GPUCollate, build_transforms, attach_dataset_transform
 
 try:
     import onnxruntime as ort
@@ -584,6 +584,7 @@ def main(cfg: DictConfig):
         log.warning("Make sure your dataset config includes Normalize in the transforms!")
 
     test_transform = build_transforms(cfg, is_train=False, test=True)
+    test_dataset = attach_dataset_transform(test_dataset, test_transform)
 
     # Set dataloader parameters.
     # MPS tensors can't be shared across worker processes, so force num_workers=0.
@@ -605,7 +606,7 @@ def main(cfg: DictConfig):
         shuffle=False,
         num_workers=num_workers,
         pin_memory=pin_memory,
-        collate_fn=GPUCollate(device, test_transform)
+        collate_fn=GPUCollate(device),
     )
 
     # Evaluate model (visualize samples + collect predictions)
