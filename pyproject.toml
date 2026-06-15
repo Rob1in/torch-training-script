@@ -71,6 +71,15 @@ vision-service = [
     "google-api-python-client",
 ]
 
+# Lightweight inference core (omni_inference package) — no viam, no torch.
+# This is the extra the consuming repo installs.
+inference = [
+    "onnxruntime>=1.16.0",
+    "numpy>=1.21.0",
+    "pillow>=9.0.0",
+    "opencv-python-headless>=4.8.0",
+]
+
 # Development dependencies
 dev = [
     "pytest>=7.0.0",
@@ -99,7 +108,7 @@ requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-packages = ["src"]
+packages = ["src", "omni_inference"]
 
 [tool.black]
 line-length = 100
