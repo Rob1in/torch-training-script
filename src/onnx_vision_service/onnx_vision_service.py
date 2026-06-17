@@ -25,9 +25,6 @@ from typing import (
     Union,
 )
 
-import cv2
-import numpy as np
-import onnxruntime as ort
 from PIL import Image
 from typing_extensions import Self
 from viam.components.camera import Camera
@@ -42,17 +39,10 @@ from viam.resource.types import Model, ModelFamily
 from viam.services.vision import CaptureAllResult, Vision
 from viam.utils import ValueTypes
 
+from omni_inference import OmniOnnxInference, RawDetection
 from src.onnx_vision_service.utils import decode_image
 
 LOGGER = getLogger(__name__)
-
-# Hardcoded output tensor names matching convert_to_onnx.py
-ONNX_INPUT_NAME = "image"
-# NOTE: The ONNX output names from convert_to_onnx.py are misleading.
-# The model returns (boxes, labels_float, scores) but the export names them:
-#   output[0] 'location' = boxes          (correct)
-#   output[1] 'score'    = labels (float)  (misleading name — it's class indices)
-#   output[2] 'category' = scores          (misleading name — it's confidence)
 
 
 @dataclass
@@ -75,12 +65,9 @@ class OnnxVisionService(Vision, Reconfigurable):
         super().__init__(name=name)
         self.camera_name: str = ""
         self.camera: Optional[Camera] = None
-        self.session: Optional[ort.InferenceSession] = None
-        self.labels: List[str] = []
-        self.min_confidence: float = 0.0
-        self.input_height: int = 0
-        self.input_width: int = 0
-        self.background_strip_dist: float = 0.0
+        # Dependency-free inference core (holds the onnxruntime session,
+        # labels, input dims, min_confidence, and background-strip config).
+        self.inference: Optional[OmniOnnxInference] = None
         self.properties = Properties(
             classifications_supported=False,
             detections_supported=True,
@@ -154,59 +141,50 @@ class OnnxVisionService(Vision, Reconfigurable):
 
         # -- Labels ---------------------------------------------------- #
         labels_path = config.attributes.fields["labels_path"].string_value
-        self.labels = self._load_labels(labels_path)
-        LOGGER.info(f"Loaded {len(self.labels)} labels from {labels_path}: {self.labels}")
+        labels = self._load_labels(labels_path)
+        LOGGER.info(f"Loaded {len(labels)} labels from {labels_path}: {labels}")
 
         # -- Min confidence -------------------------------------------- #
-        self.min_confidence = 0.0
+        min_confidence = 0.0
         if "min_confidence" in config.attributes.fields:
-            self.min_confidence = config.attributes.fields[
+            min_confidence = config.attributes.fields[
                 "min_confidence"
             ].number_value
 
         # -- Optional preprocessing ------------------------------------ #
-        self.background_strip_dist = 0.0
+        background_strip_dist = 0.0
         if "background_strip_dist" in config.attributes.fields:
-            self.background_strip_dist = config.attributes.fields[
+            background_strip_dist = config.attributes.fields[
                 "background_strip_dist"
             ].number_value
 
-        # -- ONNX model ------------------------------------------------ #
+        # -- ONNX model (via dependency-free inference core) ------------ #
         model_path = config.attributes.fields["model_path"].string_value
-        self.session = ort.InferenceSession(
-            model_path, providers=["CPUExecutionProvider"]
+        self.inference = OmniOnnxInference(
+            model_path=model_path,
+            labels=labels,
+            min_confidence=min_confidence,
+            background_strip_dist=background_strip_dist,
         )
 
-        # Extract input shape from ONNX metadata
-        input_info = self.session.get_inputs()[0]
-        input_shape = input_info.shape  # e.g. [1, 3, 1080, 1920]
+        input_info = self.inference.session.get_inputs()[0]
         LOGGER.info(
             f"Loaded ONNX model: {model_path} | "
-            f"input: {input_info.name} {input_shape} ({input_info.type})"
+            f"input: {input_info.name} {input_info.shape} ({input_info.type})"
         )
-
-        # The model expects [batch, channels, height, width]
-        if len(input_shape) == 4:
-            _, _, h, w = input_shape
-            # Handle dynamic dimensions (symbolic strings)
-            self.input_height = int(h) if isinstance(h, int) else 0
-            self.input_width = int(w) if isinstance(w, int) else 0
-        else:
-            self.input_height = 0
-            self.input_width = 0
-
-        if self.input_height == 0 or self.input_width == 0:
+        if self.inference.input_height == 0 or self.inference.input_width == 0:
             LOGGER.warning(
                 "Could not determine fixed input size from ONNX model metadata. "
                 "Images will be passed without resizing."
             )
         else:
             LOGGER.info(
-                f"Model input size: {self.input_height}x{self.input_width}"
+                f"Model input size: "
+                f"{self.inference.input_height}x{self.inference.input_width}"
             )
 
         # Log output info
-        for out in self.session.get_outputs():
+        for out in self.inference.session.get_outputs():
             LOGGER.info(f"  output: {out.name} {out.shape} ({out.type})")
 
     # ------------------------------------------------------------------ #
@@ -221,24 +199,16 @@ class OnnxVisionService(Vision, Reconfigurable):
         timeout: Optional[float] = None,
     ) -> List[Detection]:
         """Get detections from an image."""
+        if self.inference is None:
+            raise RuntimeError("Service not configured: no ONNX model loaded.")
+
         img_pil = decode_image(image)
         orig_w, orig_h = img_pil.size  # PIL uses (width, height)
 
-        # Preprocess: resize → numpy uint8 [1, C, H, W]
-        input_tensor = self._preprocess(img_pil)
+        # Run the dependency-free inference core (normalized [0,1] coords).
+        raw_detections = self.inference.infer(img_pil)
 
-        # Run ONNX inference
-        outputs = self.session.run(
-            None, {ONNX_INPUT_NAME: input_tensor}
-        )
-        # Unpack in DATA order (not name order — see NOTE above):
-        #   output[0] = boxes, output[1] = labels (float), output[2] = scores
-        boxes, categories, scores = outputs
-
-        # Post-process → List[Detection]
-        return self._postprocess(
-            boxes, scores, categories, orig_w, orig_h
-        )
+        return self._to_viam_detections(raw_detections, orig_w, orig_h)
 
     async def get_detections_from_camera(
         self,
@@ -359,53 +329,6 @@ class OnnxVisionService(Vision, Reconfigurable):
     # ------------------------------------------------------------------ #
 
     @staticmethod
-    def _background_strip_np(img_hwc_u8: np.ndarray, dist: float = 150) -> np.ndarray:
-        """Strip pixels within Euclidean distance ``dist`` of the k-means background.
-
-        This is a numpy→numpy port of `src/utils/transforms.py::background_strip`
-        with the same behavior:
-        - Distance computed in **8-bit RGB space** (values 0–255)
-        - Background color estimated via k-means on a resized 100×100 image
-
-        Args:
-            img_hwc_u8: uint8 image of shape [H, W, 3] in RGB order.
-            dist: Euclidean distance threshold in 8-bit RGB space.
-
-        Returns:
-            uint8 image [H, W, 3] (zeros where stripped).
-        """
-        if not isinstance(img_hwc_u8, np.ndarray):
-            raise TypeError(f"Expected numpy.ndarray, got {type(img_hwc_u8)}")
-        if img_hwc_u8.ndim != 3 or img_hwc_u8.shape[2] != 3:
-            raise ValueError(f"Expected [H, W, 3], got shape {img_hwc_u8.shape}")
-        if img_hwc_u8.dtype != np.uint8:
-            raise ValueError(f"Expected dtype uint8, got {img_hwc_u8.dtype}")
-
-        # Mirror `get_background_from_img_tensor()`:
-        # - reshape image as 100x100 float32 in [0, 1]
-        # - run cv2.kmeans with k=5 and count the most common label
-        resized = cv2.resize(img_hwc_u8, (100, 100), interpolation=cv2.INTER_LINEAR)
-        data = (resized.astype(np.float32) / 255.0).reshape((-1, 3)).astype(np.float32)
-        
-        criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 100, 0.85)
-        _compactness, labels, centers = cv2.kmeans(
-            data, 5, None, criteria, 10, cv2.KMEANS_RANDOM_CENTERS
-        )
-        labels = labels.reshape(-1)
-        max_label = int(np.bincount(labels, minlength=centers.shape[0]).argmax())
-        background_color_01 = centers[max_label]  # float32 in [0,1]
-        bg_rgb_255 = background_color_01 * 255.0  # float32 in [0,255]
-
-        diff = img_hwc_u8.astype(np.float32) - bg_rgb_255.reshape((1, 1, 3))
-        dist_sq_map = np.sum(diff * diff, axis=2)  # (H, W)
-        dist_sq = float(dist) * float(dist)
-        mask = dist_sq_map <= dist_sq
-
-        out = img_hwc_u8.copy()
-        out[mask] = 0
-        return out
-
-    @staticmethod
     def _load_labels(labels_path: str) -> List[str]:
         """Load class labels from a text file (one label per line)."""
         path = Path(labels_path)
@@ -417,107 +340,53 @@ class OnnxVisionService(Vision, Reconfigurable):
                     labels.append(line)
         return labels
 
-    def _preprocess(self, img_pil: Image.Image) -> np.ndarray:
-        """Resize image and convert to uint8 numpy tensor [1, C, H, W].
-
-        Args:
-            img_pil: PIL RGB image.
-
-        Returns:
-            numpy array of shape [1, 3, H, W], dtype uint8.
-        """
-        if self.input_height > 0 and self.input_width > 0:
-            img_resized = img_pil.resize(
-                (self.input_width, self.input_height), Image.BILINEAR
-            )
-        else:
-            img_resized = img_pil
-
-        # [H, W, C] uint8 → [C, H, W] uint8 → [1, C, H, W] uint8
-        img_np = np.array(img_resized, dtype=np.uint8)
-        if self.background_strip_dist and self.background_strip_dist > 0:
-            img_np = self._background_strip_np(img_np, dist=self.background_strip_dist)
-        img_chw = img_np.transpose(2, 0, 1)
-        return np.expand_dims(img_chw, axis=0)
-
-    def _postprocess(
-        self,
-        boxes: np.ndarray,
-        scores: np.ndarray,
-        categories: np.ndarray,
+    @staticmethod
+    def _to_viam_detections(
+        raw_detections: List[RawDetection],
         orig_width: int,
         orig_height: int,
     ) -> List[Detection]:
-        """Convert ONNX outputs to Viam Detection objects.
+        """Convert core RawDetection (normalized coords) to Viam Detection.
 
-        The model outputs bounding boxes in the coordinate space of its
-        input tensor (input_height × input_width). We scale them back
-        to the original image dimensions.
+        The output contract carries BOTH absolute pixel coords (in ORIGINAL
+        image space) AND normalized coords. Pixel coords are computed as
+        ``normalized * original_dimension``.
 
         Args:
-            boxes:      [N, 4] float32 — (x_min, y_min, x_max, y_max) in model coords
-            scores:     [N] float32    — confidence scores
-            categories: [N] float32    — class indices (float, cast to int)
-            orig_width:  Original image width  (before resize)
-            orig_height: Original image height (before resize)
-
-        Returns:
-            Filtered list of Detection objects.
+            raw_detections: Detections from the inference core (already
+                filtered by min_confidence; coords normalized to [0, 1]).
+            orig_width:  Original image width  (before resize).
+            orig_height: Original image height (before resize).
         """
-        if len(scores) == 0:
-            return []
-
-        # Scale factors to map from model input coords → original image coords
-        if self.input_width > 0 and self.input_height > 0:
-            sx = orig_width / self.input_width
-            sy = orig_height / self.input_height
-        else:
-            sx = 1.0
-            sy = 1.0
-
         detections: List[Detection] = []
-        for i in range(len(scores)):
-            score = float(scores[i])
-            if score < self.min_confidence:
-                continue
+        for raw in raw_detections:
+            # Map normalized coords back to original-image pixel space.
+            x_min = raw.x_min * orig_width
+            y_min = raw.y_min * orig_height
+            x_max = raw.x_max * orig_width
+            y_max = raw.y_max * orig_height
 
-            # Map class index to label.
-            # Faster R-CNN uses 0 = background, 1..N = actual classes.
-            # The labels list is 0-indexed (no background entry), so subtract 1.
-            cat_idx = int(round(categories[i])) - 1
-            if 0 <= cat_idx < len(self.labels):
-                class_name = self.labels[cat_idx]
-            else:
-                class_name = str(cat_idx + 1)  # fallback: show original index
-
-            # Scale box to original image coordinates
-            x_min = float(boxes[i][0]) * sx
-            y_min = float(boxes[i][1]) * sy
-            x_max = float(boxes[i][2]) * sx
-            y_max = float(boxes[i][3]) * sy
-
-            detection = Detection(
-                x_min=int(x_min),
-                y_min=int(y_min),
-                x_max=int(x_max),
-                y_max=int(y_max),
-                confidence=score,
-                class_name=class_name,
-            )
-
-            # Add normalized coordinates if original dimensions are valid
             if orig_width > 0 and orig_height > 0:
                 detection = Detection(
                     x_min=int(x_min),
                     y_min=int(y_min),
                     x_max=int(x_max),
                     y_max=int(y_max),
-                    x_min_normalized=x_min / orig_width,
-                    y_min_normalized=y_min / orig_height,
-                    x_max_normalized=x_max / orig_width,
-                    y_max_normalized=y_max / orig_height,
-                    confidence=score,
-                    class_name=class_name,
+                    x_min_normalized=raw.x_min,
+                    y_min_normalized=raw.y_min,
+                    x_max_normalized=raw.x_max,
+                    y_max_normalized=raw.y_max,
+                    confidence=raw.confidence,
+                    class_name=raw.class_name,
+                )
+            else:
+                detection = Detection(
+                    x_min=int(x_min),
+                    y_min=int(y_min),
+                    x_max=int(x_max),
+                    y_max=int(y_max),
+                    confidence=raw.confidence,
+                    class_name=raw.class_name,
                 )
 
             detections.append(detection)
