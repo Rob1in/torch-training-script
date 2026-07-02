@@ -3,10 +3,12 @@ torch>=2.0.0
 torchvision>=0.15.0
 numpy>=1.21.0
 pillow>=9.0.0
+opencv-python>=4.13.0.92
 
 # Configuration management
 hydra-core>=1.3.0
 omegaconf>=2.3.0
+hydra-optuna-sweeper>=1.2.0
 
 # Training dependencies
 tqdm>=4.64.0

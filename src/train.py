@@ -27,7 +27,7 @@ from utils.coco_eval import evaluate_coco
 from utils.freeze import configure_model_for_transfer_learning
 from utils.model_ema import ModelEMA
 from utils.seed import set_seed
-from utils.transforms import DetectionTransform, GPUCollate, compute_dataset_stats
+from utils.transforms import DetectionTransform, GPUCollate, attach_dataset_transform, compute_dataset_stats
 
 log = logging.getLogger(__name__)
 
@@ -424,14 +424,12 @@ def create_coco_gt(val_dataset, output_path, classes):
     from torch.utils.data import Subset
 
     if isinstance(val_dataset, Subset):
-        # Auto-split case: val_dataset wraps a ViamDataset
         dataset_to_coco(
             dataset=val_dataset.dataset,
             indices=list(val_dataset.indices),
             output_path=output_path,
         )
     elif isinstance(val_dataset, ViamDataset):
-        # Separate val_dir case
         jsonl_to_coco(
             jsonl_path=str(val_dataset.jsonl_path),
             data_dir=str(val_dataset.data_dir),
@@ -556,7 +554,9 @@ def main(cfg: DictConfig):
     
     train_transform = DetectionTransform(cfg.dataset.transform.train) if cfg.dataset.transform.train else None
     val_transform = DetectionTransform(cfg.dataset.transform.val) if cfg.dataset.transform.val else None
-    
+    train_dataset = attach_dataset_transform(train_dataset, train_transform)
+    val_dataset = attach_dataset_transform(val_dataset, val_transform)
+
     # Create dataloaders
     num_workers = cfg.training.num_workers
     pin_memory = cfg.training.pin_memory and device.type == 'cuda'
@@ -567,8 +567,7 @@ def main(cfg: DictConfig):
         shuffle=True,
         num_workers=num_workers,
         pin_memory=pin_memory,
-        #TODO: replace GPUCollate with CPU transform and rely on multiple workers for keeping GPU fed and CPU busy
-        collate_fn=GPUCollate(device, train_transform)
+        collate_fn=GPUCollate(device),
     )
     
     val_loader = DataLoader(
@@ -577,7 +576,7 @@ def main(cfg: DictConfig):
         shuffle=False,
         num_workers=num_workers,
         pin_memory=pin_memory,
-        collate_fn=GPUCollate(device, val_transform)
+        collate_fn=GPUCollate(device),
     )
     
     # Create model (now with correct num_classes)

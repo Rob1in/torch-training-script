@@ -2,12 +2,15 @@ import json
 import logging
 import os
 from pathlib import Path
-from typing import List, Optional
+from typing import TYPE_CHECKING, List, Optional
 
 import torch
 import torchvision.transforms.functional as F
 from PIL import Image
 from torch.utils.data import Dataset
+
+if TYPE_CHECKING:
+    from utils.transforms import DetectionTransform
 
 log = logging.getLogger(__name__)
 
@@ -20,6 +23,7 @@ class ViamDataset(Dataset):
         jsonl_path: str, 
         data_dir: str, 
         classes: Optional[List[str]] = None,
+        transform: Optional["DetectionTransform"] = None,
     ):
         """
         Args:
@@ -27,8 +31,10 @@ class ViamDataset(Dataset):
             data_dir: Directory containing images (or base directory if image_path is absolute)
             classes: List of annotation labels to include (e.g., ['triangle', 'person']). 
                     If None, includes all annotations found in the JSONL file.
+            transform: Optional CPU-side DetectionTransform applied in __getitem__.
         """
         self.data_dir = Path(data_dir)
+        self.transform = transform
         self.samples = []
         
         jsonl_path = Path(jsonl_path)
@@ -134,7 +140,19 @@ class ViamDataset(Dataset):
     def get_classes(self) -> List[str]:
         """Return sorted list of class names."""
         return sorted(self.label_to_id.keys())
-    
+
+    def with_transform(self, transform: Optional["DetectionTransform"]) -> "ViamDataset":
+        """Return a shallow clone that shares samples but uses a different transform."""
+        clone = object.__new__(ViamDataset)
+        clone.data_dir = self.data_dir
+        clone.samples = self.samples
+        clone.label_to_id = self.label_to_id
+        clone.id_to_label = self.id_to_label
+        clone.num_classes = self.num_classes
+        clone.jsonl_path = self.jsonl_path
+        clone.transform = transform
+        return clone
+
     def __len__(self):
         return len(self.samples)
     
@@ -205,15 +223,16 @@ class ViamDataset(Dataset):
         # Convert PIL image to tensor
         image = F.to_tensor(image)
         
-        # Create target dictionary (image_id will be added by transforms if needed)
         target = {
             'boxes': boxes,
             'labels': labels,
-            'image_id': torch.tensor([idx]),  # Use dataset index as image_id
-            'orig_size': torch.tensor([img_height, img_width])  # Original image dimensions [H, W]
+            'image_id': torch.tensor([idx]),
+            'orig_size': torch.tensor([img_height, img_width])
         }
-        
-        # Note: Transforms are applied by GPUCollate, not here
+
+        if self.transform is not None:
+            image, target = self.transform(image, target)
+
         return image, target
 
 

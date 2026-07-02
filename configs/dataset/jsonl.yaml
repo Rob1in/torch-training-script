@@ -32,7 +32,7 @@ normalization:
   image_std: null               # Manual override, e.g. [0.21, 0.20, 0.19]
 
 # Transform configuration
-# Note: Transforms are applied via GPUCollate in the dataloader BEFORE model.forward()
+# Note: Transforms are applied on CPU in ViamDataset.__getitem__ BEFORE model.forward()
 #
 # NORMALIZATION: DO NOT add Normalize here!
 # All torchvision detection models (Faster R-CNN, SSDLite) have a built-in
