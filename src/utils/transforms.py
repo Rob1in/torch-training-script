@@ -185,41 +185,38 @@ class DetectionTransform:
         return image, new_boxes
 
 
-class GPUCollate:
-    """Collate function that moves CPU-transformed samples to the target device."""
+def detection_collate(batch: List[Tuple[torch.Tensor, Dict]]) -> Tuple[torch.Tensor, List[Dict]]:
+    """Collate (image, target) samples into a batched CPU tensor + target list.
 
-    def __init__(self, device: torch.device):
-        self.device = device
+    Runs in DataLoader worker processes, so it must not touch CUDA — the
+    consumer moves the batch to the device (see move_batch_to_device).
 
-    def __call__(self, batch: List[Tuple[torch.Tensor, Dict]]) -> Tuple[torch.Tensor, List[Dict]]:
-        """
-        Collate batch of samples.
+    Args:
+        batch: List of (image, target) tuples with CPU tensors
 
-        Args:
-            batch: List of (image, target) tuples with CPU tensors
+    Returns:
+        Batched images tensor [B, C, H, W] and list of targets, all on CPU
+    """
+    images = torch.stack([image for image, _ in batch], dim=0)
+    targets = [target for _, target in batch]
+    return images, targets
 
-        Returns:
-            Batched images tensor [B, C, H, W] and list of targets
-        """
-        images = []
-        targets = []
 
-        for image, target in batch:
-            image_on_device = image.to(self.device)
+def move_batch_to_device(
+    images: torch.Tensor, targets: List[Dict], device: torch.device
+) -> Tuple[torch.Tensor, List[Dict]]:
+    """Move a collated batch to the target device.
 
-            target_on_device = {}
-            for key, value in target.items():
-                if isinstance(value, torch.Tensor):
-                    target_on_device[key] = value.to(self.device)
-                else:
-                    target_on_device[key] = value
-
-            images.append(image_on_device)
-            targets.append(target_on_device)
-
-        images = torch.stack(images, dim=0)
-
-        return images, targets
+    non_blocking=True overlaps the host-to-device copy with GPU compute when
+    the source tensors are in pinned memory (DataLoader pin_memory=True).
+    """
+    images = images.to(device, non_blocking=True)
+    targets = [
+        {k: v.to(device, non_blocking=True) if isinstance(v, torch.Tensor) else v
+         for k, v in t.items()}
+        for t in targets
+    ]
+    return images, targets
 
 
 def attach_dataset_transform(dataset, transform: Optional[DetectionTransform]):

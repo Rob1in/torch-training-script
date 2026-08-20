@@ -54,8 +54,10 @@ def collect_predictions(
     
     with torch.no_grad():
         for images, targets in tqdm(data_loader, desc='Collecting Predictions'):
-            # Run inference (no targets passed to model)
-            outputs = model(images)
+            # Run inference (no targets passed to model). Batches arrive on
+            # CPU (detection_collate); targets stay on CPU — only image_id
+            # and orig_size are read from them, on the host.
+            outputs = model(images.to(device, non_blocking=True))
             
             # Process each image's predictions
             for img_idx, (target, output) in enumerate(zip(targets, outputs)):
