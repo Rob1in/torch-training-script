@@ -27,7 +27,7 @@ from utils.coco_eval import evaluate_coco
 from utils.freeze import configure_model_for_transfer_learning
 from utils.model_ema import ModelEMA
 from utils.seed import set_seed
-from utils.transforms import DetectionTransform, GPUCollate, attach_dataset_transform, compute_dataset_stats
+from utils.transforms import DetectionTransform, attach_dataset_transform, compute_dataset_stats, detection_collate, move_batch_to_device
 
 log = logging.getLogger(__name__)
 
@@ -37,14 +37,15 @@ OmegaConf.register_new_resolver("basename", lambda p: Path(p).name if p else "un
 OmegaConf.register_new_resolver("fmt", lambda v: f"{float(v):.4g}")
 
 
-def train_one_epoch(model, optimizer, data_loader, epoch, cfg, model_ema=None):
+def train_one_epoch(model, optimizer, data_loader, device, epoch, cfg, model_ema=None):
     """
     Train for one epoch. Matches PyTorch Vision reference implementation.
-    
+
     Args:
         model: The model to train
         optimizer: Optimizer
         data_loader: Training data loader
+        device: Device to train on
         epoch: Current epoch number
         cfg: Hydra config
         model_ema: Optional EMA model
@@ -87,6 +88,8 @@ def train_one_epoch(model, optimizer, data_loader, epoch, cfg, model_ema=None):
     optimizer.zero_grad()
     
     for batch_idx, (images, targets) in enumerate(pbar):
+        images, targets = move_batch_to_device(images, targets, device)
+
         # Forward pass - model returns loss dict in training mode
         loss_dict = model(images, targets)
 
@@ -167,6 +170,7 @@ def evaluate_loss(model, data_loader, device, epoch, cfg):
     
     with torch.no_grad():
         for images, targets in data_loader:
+            images, targets = move_batch_to_device(images, targets, device)
             loss_dict = model(images, targets)
             batch_loss = sum(loss_dict.values()).item()
             val_loss += batch_loss
@@ -518,7 +522,7 @@ def main(cfg: DictConfig):
         device = torch.device('cpu')
     
     log.info(f"Using device: {device}")
-    
+
     # Resolve paths, discover classes, create datasets
     train_dataset, val_dataset = prepare_data(cfg)
     
@@ -561,22 +565,26 @@ def main(cfg: DictConfig):
     num_workers = cfg.training.num_workers
     pin_memory = cfg.training.pin_memory and device.type == 'cuda'
     
+    # persistent_workers avoids paying the spawn startup cost on each of the
+    # multiple loader passes per epoch (train, val loss, COCO eval).
     train_loader = DataLoader(
         train_dataset,
         batch_size=cfg.training.batch_size,
         shuffle=True,
         num_workers=num_workers,
         pin_memory=pin_memory,
-        collate_fn=GPUCollate(device),
+        collate_fn=detection_collate,
+        persistent_workers=num_workers > 0,
     )
-    
+
     val_loader = DataLoader(
         val_dataset,
         batch_size=cfg.training.batch_size,
         shuffle=False,
         num_workers=num_workers,
         pin_memory=pin_memory,
-        collate_fn=GPUCollate(device),
+        collate_fn=detection_collate,
+        persistent_workers=num_workers > 0,
     )
     
     # Create model (now with correct num_classes)
@@ -707,6 +715,7 @@ def main(cfg: DictConfig):
             model=model,
             optimizer=optimizer,
             data_loader=train_loader,
+            device=device,
             epoch=epoch,
             cfg=cfg,
             model_ema=model_ema
