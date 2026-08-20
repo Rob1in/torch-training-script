@@ -85,8 +85,8 @@ training:
   gradient_clip: 0.0  # Max gradient norm (0 to disable, PyTorch reference doesn't use it)
   gradient_accumulation_steps: 1  # Effective batch = batch_size * this value
   early_stopping_patience: 10  # Shorter patience for sweeps
-  num_workers: 1
-  pin_memory: false
+  num_workers: 8  # CPU-side image pipeline workers (scale to available cores)
+  pin_memory: true  # Page-locked staging buffers for async H2D copies
   
   # Model EMA (Exponential Moving Average)
   use_ema: true  # Enable EMA for more stable models (+0.5-1.0 mAP)
