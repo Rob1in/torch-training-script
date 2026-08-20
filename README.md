@@ -785,7 +785,11 @@ python src/eval.py dataset_dir=./my_dataset run_dir=outputs/YYYY-MM-DD/HH-MM-SS
 bash convert_model.sh outputs/YYYY-MM-DD/HH-MM-SS --dataset-dir ./my_dataset
 ```
 
-Output: `outputs/YYYY-MM-DD/HH-MM-SS/onnx_model/` containing `model.onnx` and `labels.txt`.
+Output: `outputs/YYYY-MM-DD/HH-MM-SS/onnx_model/` containing `model.onnx`, `labels.txt`, `config.yaml` (the training config, copied verbatim for reproducibility), and `conversion_summary.txt`. The directory is rebuilt from scratch on every run — everything in it ships to the registry in Step 7.
+
+Add `--evaluate-converted-model` to also evaluate the exported ONNX model on the test dataset. The evaluation output lands outside the package (in `eval_<dataset>_model_onnx/` inside the run dir), and if PyTorch evaluation results are available, a `comparison.json` (PyTorch vs ONNX metrics) is included in the package.
+
+Add `--pytorch-metrics PATH` to also ship a PyTorch evaluation metrics file in the package (as `pytorch_metrics.json`) — this is how consumers of your model see its accuracy without running their own evaluation. The evaluation also used in Step 3 produces this file: `python src/eval.py` writes it to `run_dir/eval_<dataset>_<checkpoint>_pth/<model>_metrics.json` (e.g. `faster_rcnn_metrics.json`). When provided, this file is also used as the PyTorch side of the comparison, as long as it was evaluated on the same dataset as `--dataset-dir` — otherwise the comparison falls back to a prior eval on that dataset, or is skipped.
 
 ### Step 5: Build the vision service
 
@@ -845,15 +849,35 @@ For production, upload your model to the registry so any machine in your org can
 
 **7a. Upload the model package:**
 
+Use the provided `Makefile` to package and upload to the registry in one step:
+
+```bash
+make upload RUN_DIR=outputs/YYYY-MM-DD/HH-MM-SS VERSION=<version>
+```
+
+This verifies that `RUN_DIR/onnx_model/` contains all required package files (`model.onnx`, `labels.txt`, `config.yaml`, `pytorch_metrics.json`), bundles them into `archive.tar.gz`, and uploads it to the registry with `viam packages upload`. If any files are missing, re-run: `bash convert_model.sh <run_dir> --dataset-dir <dataset> --pytorch-metrics <metrics.json>` (see Step 4).
+
+Variables:
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `RUN_DIR` | yes | Training output directory containing `onnx_model/` |
+| `VERSION` | yes | Package version to publish (e.g. `0.1.2`) |
+| `ORG_ID` | yes | Your Viam organization ID — set it in a `.env` file at the repo root (`ORG_ID=<org-id>`) |
+| `MODEL_NAME` | yes | Package name in the registry — set it in `.env` (e.g. `MODEL_NAME=omni-detector`) |
+| `VIAM` | no | Path to the `viam` CLI binary (default: `viam`) |
+
+Equivalent manual upload, if you'd rather not use the Makefile:
+
 ```bash
 viam packages upload \
     --org-id=<org-id> \
     --name=<package-name> \
     --version=<version> \
     --type=ml_model \
-    --upload=<path-to-onnx_model.tar.gz> \
-    --model-framework=<framework> \
-    --model-type=<model-type>
+    --model-type=object_detection \
+    --path=<path-to-onnx_model-archive.tar.gz> \
+    --model-framework=onnx
 ```
 
 **7b. Add the package to your machine config:**
@@ -923,6 +947,7 @@ torch-training-script/
 │       ├── onnx_vision_service.py # Vision service implementation
 │       ├── utils.py              # Image decoding utilities
 │       └── build.sh              # Build script (PyInstaller)
+├── Makefile                      # `make upload`: package + upload model to Viam registry
 ├── convert_model.sh              # ONNX conversion script (shell wrapper)
 ├── convert_to_onnx.py            # ONNX conversion (Python, all architectures)
 ├── quantize_onnx.py              # Static INT8 ONNX quantization

@@ -51,6 +51,15 @@ This will:
 2. Evaluate the ONNX model on the test dataset
 3. Compare ONNX vs PyTorch performance (if PyTorch evaluation exists)
 
+### Convert + Ship PyTorch metrics
+
+To ship preexisting PyTorch evaluation metrics in the package as `pytorch_metrics.json` (no evaluation needed):
+```bash
+bash convert_model.sh outputs/2026-02-02/15-15-47 \
+    --dataset-dir triangles_dataset_small \
+    --pytorch-metrics outputs/2026-02-02/15-15-47/eval_triangles_dataset_small_best_model_pth/faster_rcnn_metrics.json
+```
+
 ## Arguments
 
 ### Required
@@ -64,10 +73,12 @@ This will:
   - Used to extract first image if `--image-input` not provided
   - Required if `--evaluate-converted-model` is used
 - `--evaluate-converted-model` - Run evaluation on converted ONNX model (requires `--dataset-dir`)
+- `--pytorch-metrics PATH` - PyTorch eval metrics JSON (e.g. `faster_rcnn_metrics.json`) to include in the package as `pytorch_metrics.json`
 
 ## Output Structure
 
-After conversion, the following structure is created:
+After conversion, the following structure is created (`onnx_model/` is rebuilt
+from scratch on every run):
 
 ```
 outputs/2026-02-02/15-15-47/
@@ -76,7 +87,10 @@ outputs/2026-02-02/15-15-47/
 │   └── config.yaml             # Training configuration
 └── onnx_model/                 # ONNX conversion outputs
     ├── model.onnx              # ONNX model file (ready for deployment)
+    ├── labels.txt              # Class labels for the Viam Vision Service
+    ├── config.yaml             # Training config, copied verbatim for reproducibility
     ├── conversion_summary.txt  # Conversion details and usage instructions
+    ├── pytorch_metrics.json    # PyTorch eval metrics (if --pytorch-metrics provided)
     └── comparison.json         # PyTorch vs ONNX comparison (if evaluation enabled)
 ```
 
@@ -108,7 +122,9 @@ This allows multiple evaluations on different datasets or checkpoints without ov
 
 ## Performance Comparison
 
-When `--evaluate-converted-model` is used and both PyTorch and ONNX evaluations exist, the script automatically compares:
+When `--evaluate-converted-model` is used, the PyTorch side of the comparison comes from `--pytorch-metrics` if provided, otherwise from a prior PyTorch evaluation at the conventional location (`run_dir/eval_<dataset>_<checkpoint>_pth/faster_rcnn_metrics.json`).
+
+Comparisons are only made between evaluations of the same dataset: if the provided `--pytorch-metrics` were evaluated on a different dataset than `--dataset-dir`, the script falls back to the conventional location, and skips the comparison entirely if no matching metrics exist there either (the provided metrics still ship in the package). When both sides exist, the script compares:
 
 - **AP** (mAP @ IoU=0.50:0.95) - Main metric
 - **AP50** (mAP @ IoU=0.50) - More lenient

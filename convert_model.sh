@@ -28,6 +28,7 @@ DATASET_DIR=""
 IMAGE_INPUT=""
 EVALUATE_CONVERTED_MODEL=false
 CHECKPOINT_PATH=""
+PYTORCH_METRICS_FILE=""
 
 # Parse arguments
 if [ $# -lt 1 ]; then
@@ -44,6 +45,9 @@ if [ $# -lt 1 ]; then
     echo "                                 (used to extract first image if --image-input not provided)"
     echo "  --evaluate-converted-model     Run evaluation on converted ONNX model"
     echo "                                 (requires --dataset-dir)"
+    echo "  --pytorch-metrics PATH         PyTorch eval metrics JSON (e.g. faster_rcnn_metrics.json)"
+    echo "                                 to include in the model package as pytorch_metrics.json"
+    echo "                                 and to use for the PyTorch-vs-ONNX comparison"
     echo ""
     echo "Examples:"
     echo "  # Convert with single image"
@@ -82,6 +86,10 @@ while [[ $# -gt 0 ]]; do
         --evaluate-converted-model)
             EVALUATE_CONVERTED_MODEL=true
             shift
+            ;;
+        --pytorch-metrics)
+            PYTORCH_METRICS_FILE="$2"
+            shift 2
             ;;
         *)
             echo "Unknown option: $1"
@@ -137,9 +145,7 @@ if [ ! -f "$HYDRA_CONFIG" ]; then
     exit 1
 fi
 
-# Create output directory
 ONNX_DIR="$RUN_DIR/onnx_model"
-mkdir -p "$ONNX_DIR"
 
 # Validate that we have either image-input or dataset-dir for conversion
 if [ -z "$IMAGE_INPUT" ] && [ -z "$DATASET_DIR" ]; then
@@ -155,6 +161,17 @@ if [ "$EVALUATE_CONVERTED_MODEL" = true ] && [ -z "$DATASET_DIR" ]; then
     echo "Error: --evaluate-converted-model requires --dataset-dir"
     exit 1
 fi
+
+# Validate pytorch metrics file exists if provided
+if [ -n "$PYTORCH_METRICS_FILE" ] && [ ! -f "$PYTORCH_METRICS_FILE" ]; then
+    echo "Error: PyTorch metrics file not found: $PYTORCH_METRICS_FILE"
+    exit 1
+fi
+
+# Create the output package from scratch so a previous run's conditional
+# artifacts (pytorch_metrics.json, comparison.json) can't ship as stale files
+rm -rf "$ONNX_DIR"
+mkdir -p "$ONNX_DIR"
 
 echo "Configuration:"
 echo "  Run directory:     $RUN_DIR"
@@ -206,6 +223,11 @@ echo ""
 echo "✓ ONNX model created: $ONNX_DIR/model.onnx"
 echo ""
 
+# Copy training config into the package for reproducibility
+cp "$HYDRA_CONFIG" "$ONNX_DIR/config.yaml"
+echo "✓ Training config copied: $ONNX_DIR/config.yaml"
+echo ""
+
 # Step 2: Evaluate ONNX model (optional)
 if [ "$EVALUATE_CONVERTED_MODEL" = true ]; then
     echo "=========================================="
@@ -247,25 +269,72 @@ echo "----------------------------------------"
 if [ "$EVALUATE_CONVERTED_MODEL" = true ]; then
     DATASET_NAME="$(basename "$DATASET_DIR")"
     
-    # Extract checkpoint name from checkpoint path (stem without extension)
-    # For PyTorch evaluation, use the checkpoint that was used for training
-    # Default to "best_model" if auto-detected, otherwise use the stem of the provided path
+    # Conventional prior-eval location:
+    # run_dir/eval_<dataset>_<checkpoint>_pth/faster_rcnn_metrics.json
     if [ -z "$CHECKPOINT_PATH" ]; then
         PYTORCH_CHECKPOINT_NAME="best_model"
     else
         PYTORCH_CHECKPOINT_NAME="$(basename "$CHECKPOINT_PATH" .pth)"
     fi
     PYTORCH_EVAL_DIR="$RUN_DIR/eval_${DATASET_NAME}_${PYTORCH_CHECKPOINT_NAME}_pth"
-    PYTORCH_METRICS="$PYTORCH_EVAL_DIR/faster_rcnn_metrics.json"
-    
+    CONVENTIONAL_METRICS="$PYTORCH_EVAL_DIR/faster_rcnn_metrics.json"
+
+    # PyTorch metrics for the comparison: prefer --pytorch-metrics when provided
+    if [ -n "$PYTORCH_METRICS_FILE" ]; then
+        PYTORCH_METRICS="$PYTORCH_METRICS_FILE"
+    else
+        PYTORCH_METRICS="$CONVENTIONAL_METRICS"
+    fi
+
     # ONNX checkpoint name is "model" (stem of model.onnx)
     ONNX_CHECKPOINT_NAME="model"
     ONNX_EVAL_DIR="$RUN_DIR/eval_${DATASET_NAME}_${ONNX_CHECKPOINT_NAME}_onnx"
     ONNX_METRICS="$ONNX_EVAL_DIR/onnx_metrics.json"
 fi
 
+# Succeeds when the two metrics files record the same dataset (by directory
+# name), or when either side doesn't record one
+datasets_match() {
+    python3 - "$1" "$2" << 'EOF'
+import json
+import sys
+from pathlib import Path
+
+def dataset_name(metrics_path):
+    ds = json.load(open(metrics_path)).get("dataset")
+    if isinstance(ds, dict):
+        p = ds.get("jsonl") or ds.get("data_dir")
+        return Path(p).parent.name if p else None
+    if isinstance(ds, str):
+        return Path(ds).name
+    return None
+
+a, b = dataset_name(sys.argv[1]), dataset_name(sys.argv[2])
+if a is not None and b is not None and a != b:
+    print(f"⚠️  PyTorch metrics dataset '{a}' does not match ONNX evaluation dataset '{b}'")
+    sys.exit(1)
+EOF
+}
+
 if [ "$EVALUATE_CONVERTED_MODEL" = true ] && [ -f "$PYTORCH_METRICS" ] && [ -f "$ONNX_METRICS" ]; then
-    python3 compare_metrics.py "$PYTORCH_METRICS" "$ONNX_METRICS" "$ONNX_DIR/comparison.json"
+    # A cross-dataset comparison.json must not ship in the package: if the
+    # chosen metrics were evaluated on a different dataset, fall back to the
+    # conventional prior-eval location; skip the comparison if that fails too
+    if ! datasets_match "$PYTORCH_METRICS" "$ONNX_METRICS"; then
+        if [ "$PYTORCH_METRICS" != "$CONVENTIONAL_METRICS" ] && [ -f "$CONVENTIONAL_METRICS" ] \
+                && datasets_match "$CONVENTIONAL_METRICS" "$ONNX_METRICS"; then
+            echo "   Falling back to: $CONVENTIONAL_METRICS"
+            PYTORCH_METRICS="$CONVENTIONAL_METRICS"
+        else
+            PYTORCH_METRICS=""
+        fi
+    fi
+    if [ -n "$PYTORCH_METRICS" ]; then
+        echo "Using PyTorch metrics: $PYTORCH_METRICS"
+        python3 compare_metrics.py "$PYTORCH_METRICS" "$ONNX_METRICS" "$ONNX_DIR/comparison.json"
+    else
+        echo "Skipping comparison (no PyTorch metrics for the comparison dataset)"
+    fi
 else
     if [ "$EVALUATE_CONVERTED_MODEL" = false ]; then
         echo "Skipping comparison (evaluation not requested)"
@@ -280,6 +349,12 @@ else
         echo ""
         echo "Skipping comparison (ONNX metrics not available)"
     fi
+fi
+
+# Copy the provided PyTorch metrics into the package
+if [ -n "$PYTORCH_METRICS_FILE" ]; then
+    cp "$PYTORCH_METRICS_FILE" "$ONNX_DIR/pytorch_metrics.json"
+    echo "✓ PyTorch metrics copied: $ONNX_DIR/pytorch_metrics.json"
 fi
 
 echo ""
@@ -363,7 +438,11 @@ echo ""
 echo "Contents:"
 echo "  - model.onnx              : ONNX model file"
 echo "  - labels.txt              : Class labels for Viam Vision Service"
+echo "  - config.yaml             : Training config (for reproducibility)"
 echo "  - conversion_summary.txt  : This summary"
+if [ -f "$ONNX_DIR/pytorch_metrics.json" ]; then
+    echo "  - pytorch_metrics.json    : PyTorch evaluation metrics"
+fi
 if [ "$EVALUATE_CONVERTED_MODEL" = true ]; then
     echo "  Evaluation results saved to: $ONNX_EVAL_DIR"
     echo "    - onnx_metrics.json       : Evaluation metrics"

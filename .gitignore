@@ -16,6 +16,7 @@ build/
 venv/
 ENV/
 env/
+.env
 
 # Training outputs
 outputs/
