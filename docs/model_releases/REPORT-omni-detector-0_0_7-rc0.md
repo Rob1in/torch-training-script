@@ -2,7 +2,8 @@
 
 Evaluation report, 2026-09-08; revised 2026-09-09: frame-level GT counts `single_blob`, fragment
 guide added (§6), test set moved to Appendix A, recommendation folded into §1, models named 0.0.2 /
-0.0.7 in the text (the figures still say rc6 / rc0). Brief: `SPEC-omni-0_0_7-eval-report.md`.
+0.0.7 in the text (the figures still say rc6 / rc0). Revised 2026-09-25: §6 gives two options for
+deploying the two model versions. Brief: `SPEC-omni-0_0_7-eval-report.md`.
 Assets: `REPORT-omni-detector-0_0_7-rc0-assets/`.
 
 Vocabulary: images rendered from raw sonar data are **Viam-generated images**. The test set here is
@@ -219,35 +220,160 @@ every sweep configuration (each with `evaluation.json`, `config.json`, per-seque
 
 ## 6. Fragment changes for the promotion
 
-Principle: 0.0.7 serves the Viam-generated-image path only; the screenshot path stays on 0.0.2. Every item
-below was checked against `resources/sonar-ai-v3-fragment-v108.json`, fish-predictor `origin/main`
-(`01e935c`, tag `4.0.2-rc1`, the shipping module) and sonarmarker `origin/main` (`d389cdd`). Line
-numbers refer to the v108 file.
+Principle: 0.0.7 serves the Viam-generated-image path only; the screenshot path stays on 0.0.2, the only
+one of the two models with a `triangle` class (item 7). Both fish-predictor services then live in the one
+fragment, each wired to its own model through its own ONNX vision service:
+
+```
+packages entry                      ONNX vision service      fish-predictor service
+omni-detector        0.0.2-rc6  →   vision-omni-detector  →  vision-predict-fish   (screenshots, screen1)
+omni-detector-0-0-7  0.0.7-rc0  →   generated-sonar-vs    →  generated-sonar-fp    (Viam-generated images)
+```
+
+Nothing is shared along either chain: each fish-predictor names its own `detector_name`, and each vision
+service names its own `model_path`. The v108 fragment already has both chains — the generated one is
+disabled, and its vision service currently points at the same `omni-detector` entry as the screenshot
+one. How the two model versions reach the boat is the one open choice, and there are two ways to do it.
+
+### Option 1 — two `packages` entries, one per version
+
+`${packages.ml_model.<name>}` resolves by the entry's `name`, so a second entry is the only way to
+reference a second version of the same package. Only the fields that carry the wiring:
+
+```json
+{
+  "packages": [
+    {
+      "name": "omni-detector",
+      "package": "4a0a99c7-e680-4cb5-acb1-0bd21449b455/omni-detector",
+      "type": "ml_model",
+      "version": "0.0.2-rc6"
+    },
+    {
+      "name": "omni-detector-0-0-7",
+      "package": "4a0a99c7-e680-4cb5-acb1-0bd21449b455/omni-detector",
+      "type": "ml_model",
+      "version": "0.0.7-rc0"
+    }
+  ],
+  "services": [
+    {
+      "name": "vision-omni-detector",
+      "model": "viam:vision:onnx-detector",
+      "attributes": {
+        "model_path": "${packages.ml_model.omni-detector}/model.onnx",
+        "labels_path": "${packages.ml_model.omni-detector}/labels.txt"
+      }
+    },
+    {
+      "name": "vision-predict-fish",
+      "model": "kongsberg:fish-predictor:fish-predictor-on-sonar",
+      "attributes": {
+        "detector_name": "vision-omni-detector",
+        "camera_name": "screen1"
+      }
+    },
+    {
+      "name": "generated-sonar-vs",
+      "model": "viam:vision:onnx-detector",
+      "attributes": {
+        "model_path": "${packages.ml_model.omni-detector-0-0-7}/model.onnx",
+        "labels_path": "${packages.ml_model.omni-detector-0-0-7}/labels.txt"
+      }
+    },
+    {
+      "name": "generated-sonar-fp",
+      "model": "kongsberg:fish-predictor:synthetic-image-fish-detect",
+      "attributes": {
+        "detector_name": "generated-sonar-vs",
+        "sonar_camera_name": "generated-sonar-cam"
+      }
+    }
+  ]
+}
+```
+
+Why it works: the RDK requires package `name`s to be unique, not package ids, and extracts each version
+into its own directory (`config.go` `SanitizedName`), so one package id at two versions coexists. No
+precedent in our fragments; this would be the first time we rely on it.
+
+What it costs: two package entries and two downloads, 77 MB per model on disk today. It is additive —
+the screenshot path's services are left byte-identical, and promoting a new model on either path later is
+a one-line `version` bump on that path's entry.
+
+### Option 2 — one package version holding both models
+
+Publish a new `omni-detector` version whose payload contains both models, and point each vision service
+at its own path inside the one extracted directory:
+
+```json
+{
+  "packages": [
+    {
+      "name": "omni-detector",
+      "package": "4a0a99c7-e680-4cb5-acb1-0bd21449b455/omni-detector",
+      "type": "ml_model",
+      "version": "<new combined version>"
+    }
+  ],
+  "services": [
+    {
+      "name": "vision-omni-detector",
+      "model": "viam:vision:onnx-detector",
+      "attributes": {
+        "model_path": "${packages.ml_model.omni-detector}/omni-0.0.2-rc6/model.onnx",
+        "labels_path": "${packages.ml_model.omni-detector}/omni-0.0.2-rc6/labels.txt"
+      }
+    },
+    {
+      "name": "generated-sonar-vs",
+      "model": "viam:vision:onnx-detector",
+      "attributes": {
+        "model_path": "${packages.ml_model.omni-detector}/omni-0.0.7-rc0/model.onnx",
+        "labels_path": "${packages.ml_model.omni-detector}/omni-0.0.7-rc0/labels.txt"
+      }
+    }
+  ]
+}
+```
+
+The fish-predictor wiring is unchanged from option 1; only the two `model_path` / `labels_path` pairs
+differ.
+
+This leaves **one** package entry to manage, and no reliance on two entries sharing a package id — but
+it downloads exactly the same bytes. The combined version carries both models, so every boat still pulls
+both (~154 MB), including the boats that only ever run the screenshot path. The saving is one entry in
+the fragment, not bandwidth or disk.
+
+What it costs beyond that: the two models become versioned together, so promoting a new detector for
+either path means republishing a combined package and bumping the one version every boat reads, and a
+version of `omni-detector` no longer maps to one model in the registry. It also edits
+`vision-omni-detector`, the service every boat runs today, where option 1 leaves it untouched. We have
+not published a multi-model package before; the layout above is what the onnx service needs (it reads an
+explicit path inside the extracted directory), not something verified against an upload.
+
+### The rest of the changes, identical under either option
+
+Every item below was checked against `resources/sonar-ai-v3-fragment-v108.json`, fish-predictor
+`origin/main` (`01e935c`, tag `4.0.2-rc1`, the shipping module) and sonarmarker `origin/main`
+(`d389cdd`). Line numbers refer to the v108 file.
 
 | # | Where (v108) | Change | Why |
 |---|---|---|---|
-| 1 | `packages` (l. 509–528) | Add a second entry: `name` `omni-detector-0-0-7`, same `package` id `4a0a99c7-…/omni-detector`, `type` `ml_model`, `version` `0.0.7-rc0`. Keep `omni-detector` at `0.0.2-rc6`. | Both onnx services point at the one `omni-detector` entry today (l. 421/423 and 471/473), and the screenshot path must stay on 0.0.2. The RDK requires package `name`s to be unique, not package ids, and extracts each version into its own directory (`config.go` `SanitizedName`), so one package id at two versions coexists. No precedent in our fragments; first time we rely on it. |
-| 2 | `generated-sonar-vs`, `viam:vision:onnx-detector` (l. 465–477) | `model_path` and `labels_path` → `${packages.ml_model.omni-detector-0-0-7}/…`; `disabled` → `false`. Leave `min_confidence: 0.5` (a floor; the fish-predictor threshold governs) and leave `background_strip_dist` absent. | Viam-generated images carry no screenshot background to strip, and the evaluation ran without the strip. The screenshot-path service sets `background_strip_dist: 150`; that difference is intended. |
+| 1 | `packages` (l. 509–528) | Option 1 or option 2 above. | Both onnx services point at the one `omni-detector` entry today (l. 421/423 and 471/473), and the screenshot path must stay on 0.0.2. |
+| 2 | `generated-sonar-vs`, `viam:vision:onnx-detector` (l. 465–477) | `model_path` and `labels_path` → the 0.0.7 location of the chosen option; `disabled` → `false`. Leave `min_confidence: 0.5` (a floor; the fish-predictor threshold governs) and leave `background_strip_dist` absent. | Viam-generated images carry no screenshot background to strip, and the evaluation ran without the strip. The screenshot-path service sets `background_strip_dist: 150`; that difference is intended. |
 | 3 | `generated-sonar-fp`, `kongsberg:fish-predictor:synthetic-image-fish-detect` (l. 445–462) | `disabled` → `false`; add `"min_confidence_of_fish": 0.9`; consider `"max_missed_frames": 2` (4 today). Keep `min_track_length: 2`, `min_bright_center: 1`. | Unset today, so the module default 0.5 applies. 0.0.7's best track F1 in the sweep sits at 0.90 for both swept IoU values, and with the v108 structure (track 2, missed 4) F1 rises monotonically from 0.5 to 0.9. `max_missed_frames` moves F1 by at most 0.011. All in-sample: starting points, not tuned values. |
 | 4 | `generated-sonar-fp` | Do not look for `iou_threshold`; this model has `ground_iou_threshold` instead (world-space IoU, default 0.1, unset in v108). Leave it. | The sweep's `iou_threshold 0.2` is a BlobTracker pixel-IoU knob and does not transfer. `ground_iou_threshold` was not evaluated. The same module also lacks `disable_triangle_suppression`, `enable_exclusion_zone`, `boat_detector_name` and the `small_boat_*` keys; its exclusion zone is GPS-based (`exclusion_zone_*`, already set). |
 | 5 | `generated-sonar-cam` (l. 4–28) and the four `horizontal-*-sensor` components (l. 55, 83, 111, 139) | `disabled` → `false` on the camera and the sensors. The sensors' `data_manager` `Readings` capture (l. 48, 76, 104, 132) is a separate decision: raw-sonar upload volume. | The camera reads the four fans from those sensors. |
 | 6 | `generated-filtered-cam-potential` / `-predicted` (l. 197–241) | Decide: enable and add a `service_configs` data-manager block mirroring `camera-save-*` (`GetImages` at 1 Hz, ±10 s window, `cooldown_s`), or leave disabled. Their filters (`potential_fish` / `predicted_fish` at 0.6 on `generated-sonar-fp`) already match the labels the path emits. | They exist but carry no capture block, so enabling the path alone yields no label-keyed capture from it. `raw_sonar_pair_cap_control` (l. 145–195) triggers off `vision-predict-fish`, not the generated service; unchanged here. |
-| 7 | Screenshot path: `vision-omni-detector`, `vision-predict-fish`, `camera-save-*` | No change. | 0.0.7 has no `triangle` class. With `disable_triangle_suppression: true` the screenshot path re-emits `triangle` boxes (`processor.go:488–498`) that sonarmarker's placemarker suppresses against; 0.0.7 there would silently empty them. |
+| 7 | Screenshot path: `vision-omni-detector`, `vision-predict-fish`, `camera-save-*` | Keep 0.0.2. No change at all under option 1; under option 2, `vision-omni-detector`'s `model_path` and `labels_path` move into the combined package. | 0.0.7 has no `triangle` class. With `disable_triangle_suppression: true` the screenshot path re-emits `triangle` boxes (`processor.go:488–498`) that sonarmarker's placemarker suppresses against; 0.0.7 there would silently empty them. |
 | 8 | sonarmarker (not part of this fragment) | Nothing for the screenshot placemarker. For the generated path, sonarmarker `origin/main` ships `viam-soleng:ai-sonar-marker:placemarker-synthetic`, which reads `predicted_fish` and `bait_ball` and needs no `triangle`. | Compatible with 0.0.7's single class. Its `bait_ball_metadata` read is never populated by the synthetic fish-predictor and degrades to a no-op. |
 
 Label compatibility: `synthetic-image-fish-detect` keeps only detector classes whose name contains
 `fish` (`pipeline.go:261`) and emits `potential_fish` / `predicted_fish`; 0.0.7's one class passes
-unchanged. Minimal JSON for items 1–3:
+unchanged. Minimal JSON for item 3:
 
 ```json
-"packages": [
-  { "name": "omni-detector",       "package": "4a0a99c7-e680-4cb5-acb1-0bd21449b455/omni-detector", "type": "ml_model", "version": "0.0.2-rc6" },
-  { "name": "omni-detector-0-0-7", "package": "4a0a99c7-e680-4cb5-acb1-0bd21449b455/omni-detector", "type": "ml_model", "version": "0.0.7-rc0" }
-]
-// generated-sonar-vs
-"model_path":  "${packages.ml_model.omni-detector-0-0-7}/model.onnx",
-"labels_path": "${packages.ml_model.omni-detector-0-0-7}/labels.txt",
-"disabled": false
 // generated-sonar-fp
 "min_confidence_of_fish": 0.9,
 "max_missed_frames": 2,
