@@ -345,12 +345,20 @@ it downloads exactly the same bytes. The combined version carries both models, s
 both (~154 MB), including the boats that only ever run the screenshot path. The saving is one entry in
 the fragment, not bandwidth or disk.
 
-What it costs beyond that: the two models become versioned together, so promoting a new detector for
-either path means republishing a combined package and bumping the one version every boat reads, and a
-version of `omni-detector` no longer maps to one model in the registry. It also edits
-`vision-omni-detector`, the service every boat runs today, where option 1 leaves it untouched. We have
-not published a multi-model package before; the layout above is what the onnx service needs (it reads an
-explicit path inside the extracted directory), not something verified against an upload.
+**Caveat: the package version stops being the model version.** Today the two are the same thing —
+`omni-detector` `0.0.2-rc6` is one model, and the `version` string in the fragment is how anyone reads off
+which detector a boat is running, in the registry, in a fragment diff, or in a support question. A
+combined version breaks that convention: its number cannot follow either model's, it identifies a bundle
+rather than a detector, and answering "which detector is this boat running" means reading the two
+`model_path`s instead of the version. Per-model provenance in the registry — training run, evaluation,
+release notes — no longer attaches to the version a boat reports; inside the payload it survives only as
+a directory name, by convention.
+
+The rest of what it costs: the two models become versioned together, so promoting a new detector for
+either path means republishing a combined package and bumping the one version every boat reads. It also
+edits `vision-omni-detector`, the service every boat runs today, where option 1 leaves it untouched. We
+have not published a multi-model package before; the layout above is what the onnx service needs (it
+reads an explicit path inside the extracted directory), not something verified against an upload.
 
 ### The rest of the changes, identical under either option
 
