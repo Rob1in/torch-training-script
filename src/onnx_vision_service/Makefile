@@ -23,10 +23,16 @@ setup: .setup
 
 # --- Build ---
 
-$(BINARY): .setup $(SCRIPT_DIR)/main.py $(SCRIPT_DIR)/onnx_vision_service.py $(SCRIPT_DIR)/utils.py
+# onnxruntime-openvino and openvino ship native libraries that PyInstaller's
+# import analysis does not see; --collect-all bundles them. Only packages
+# that are actually installed are collected (openvino is Windows-only here).
+PYI_COLLECT_CMD := python3 -c "import importlib.util as u; print(' '.join('--collect-all ' + p for p in ('onnxruntime', 'openvino') if u.find_spec(p)))"
+
+$(BINARY): .setup $(SCRIPT_DIR)/main.py $(SCRIPT_DIR)/onnx_vision_service.py $(SCRIPT_DIR)/utils.py $(REPO_ROOT)/omni_inference/core.py
 	cd $(REPO_ROOT) && source $(ACTIVATE) && python3 -m PyInstaller \
 		--onefile \
 		--hidden-import="googleapiclient" \
+		$$($(PYI_COLLECT_CMD)) \
 		--name onnx-vision-service \
 		src/onnx_vision_service/main.py
 	rm -rf $(REPO_ROOT)/build $(REPO_ROOT)/onnx-vision-service.spec

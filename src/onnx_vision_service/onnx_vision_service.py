@@ -42,6 +42,30 @@ from viam.utils import ValueTypes
 from omni_inference import OmniOnnxInference, RawDetection
 from src.onnx_vision_service.utils import decode_image
 
+SUPPORTED_EXECUTION_PROVIDERS = {"cpu", "openvino"}
+
+
+def _string_attr(config: ServiceConfig, key: str, default: str) -> str:
+    """Read an optional string attribute, falling back to ``default`` when absent or empty."""
+    if key not in config.attributes.fields:
+        return default
+    value = config.attributes.fields[key].string_value
+    return value if value else default
+
+
+def build_providers(execution_provider: str, openvino_device: str) -> List[Any]:
+    """Translate the config attributes into an onnxruntime providers list.
+
+    OpenVINO is listed first with CPU as the fallback so a missing provider
+    degrades to plain CPU inference instead of failing the service.
+    """
+    if execution_provider == "openvino":
+        return [
+            ("OpenVINOExecutionProvider", {"device_type": openvino_device}),
+            "CPUExecutionProvider",
+        ]
+    return ["CPUExecutionProvider"]
+
 LOGGER = getLogger(__name__)
 
 
@@ -121,6 +145,12 @@ class OnnxVisionService(Vision, Reconfigurable):
             raise Exception(
                 f"Labels file not found: {labels_path}"
             )
+        execution_provider = _string_attr(config, "execution_provider", "cpu")
+        if execution_provider not in SUPPORTED_EXECUTION_PROVIDERS:
+            raise Exception(
+                f"'execution_provider' must be one of {sorted(SUPPORTED_EXECUTION_PROVIDERS)}, "
+                f"got {execution_provider!r}"
+            )
         return [camera_name], []
 
     def reconfigure(
@@ -158,6 +188,16 @@ class OnnxVisionService(Vision, Reconfigurable):
                 "background_strip_dist"
             ].number_value
 
+        # -- Execution provider ---------------------------------------- #
+        # "cpu" (default) = onnxruntime's own CPU kernels.
+        # "openvino" = OpenVINOExecutionProvider from the onnxruntime-openvino
+        # package; `openvino_device` selects CPU / GPU / NPU / AUTO. onnxruntime
+        # silently falls back to CPU when the provider is not installed, so
+        # the active providers are logged below.
+        execution_provider = _string_attr(config, "execution_provider", "cpu")
+        openvino_device = _string_attr(config, "openvino_device", "CPU")
+        providers = build_providers(execution_provider, openvino_device)
+
         # -- ONNX model (via dependency-free inference core) ------------ #
         model_path = config.attributes.fields["model_path"].string_value
         self.inference = OmniOnnxInference(
@@ -165,6 +205,7 @@ class OnnxVisionService(Vision, Reconfigurable):
             labels=labels,
             min_confidence=min_confidence,
             background_strip_dist=background_strip_dist,
+            providers=providers,
         )
 
         input_info = self.inference.session.get_inputs()[0]
@@ -172,6 +213,18 @@ class OnnxVisionService(Vision, Reconfigurable):
             f"Loaded ONNX model: {model_path} | "
             f"input: {input_info.name} {input_info.shape} ({input_info.type})"
         )
+        LOGGER.info(
+            f"Execution provider requested: {execution_provider} "
+            f"(openvino_device={openvino_device}); "
+            f"active onnxruntime providers: {self.inference.active_providers}"
+        )
+        if execution_provider == "openvino" and not any(
+            p == "OpenVINOExecutionProvider" for p in self.inference.active_providers
+        ):
+            LOGGER.warning(
+                "OpenVINOExecutionProvider was requested but is not active; "
+                "is the onnxruntime-openvino package installed in this build?"
+            )
         if self.inference.input_height == 0 or self.inference.input_width == 0:
             LOGGER.warning(
                 "Could not determine fixed input size from ONNX model metadata. "
@@ -291,6 +344,21 @@ class OnnxVisionService(Vision, Reconfigurable):
         timeout: Optional[float] = None,
     ) -> List[Classification]:
         raise NotImplementedError("Classifications not supported by this module.")
+
+    async def get_detections_3d(
+        self,
+        camera_name: str,
+        *,
+        extra: Optional[Mapping[str, ValueTypes]] = None,
+        timeout: Optional[float] = None,
+    ) -> List[Any]:
+        """3D detections are not supported by this 2D detector.
+
+        Declared abstract by viam-sdk >= 0.84, so the class must define it to
+        be instantiable; kept untyped on the return to stay importable on
+        older SDKs that have no Detection3D type.
+        """
+        raise NotImplementedError("get_detections_3d is not supported by onnx-detector")
 
     async def get_object_point_clouds(
         self,

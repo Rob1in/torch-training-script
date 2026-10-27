@@ -54,6 +54,17 @@ Add the module and service to your machine config:
 | `camera_name` | string | yes | Name of the camera component |
 | `labels_path` | string | yes | Path to `labels.txt` (one class name per line, line number = class index) |
 | `min_confidence` | float | no | Minimum confidence threshold (default: 0.0) |
+| `execution_provider` | string | no | onnxruntime execution provider: `cpu` (default) or `openvino` (Intel OpenVINO via the `onnxruntime-openvino` package; falls back to CPU if the provider is not available, check the startup log for the active providers) |
+| `openvino_device` | string | no | OpenVINO device when `execution_provider` is `openvino`: `CPU` (default), `GPU`, `NPU`, `AUTO`, `HETERO:GPU,CPU`. The device must be able to compile the model; a failed compile fails the service with the OpenVINO error |
+
+#### OpenVINO execution provider
+
+With `"execution_provider": "openvino"` the same ONNX file runs through Intel's OpenVINO runtime
+instead of onnxruntime's own CPU kernels; pre- and post-processing are unchanged. On the Kongsberg
+vessel PC (Intel CPU, Windows) this cut the omni-detector round trip from 1237 ms to 840 ms p50 and
+let fish-predictor hold its 1 Hz loop. The Linux and Windows builds install `onnxruntime-openvino`
+(Windows additionally needs the `openvino` package, both in the `vision-service` extra); macOS has no
+OpenVINO build and keeps plain `onnxruntime`, where requesting `openvino` logs a warning and runs on CPU.
 
 ### ONNX Model Contract
 

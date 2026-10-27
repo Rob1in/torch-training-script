@@ -11,9 +11,12 @@ if ! command -v $SUDO &>/dev/null; then
     SUDO=""
 fi
 
-if command -v apt-get &>/dev/null; then
-    $SUDO apt-get update -qq
-    $SUDO apt-get install -y python3-venv
+# python3-venv is only needed on Debian/Ubuntu images that ship python3
+# without the venv module. apt failures (stale security mirrors on old images)
+# must not abort the build when venv already works.
+if ! python3 -m venv --help >/dev/null 2>&1 && command -v apt-get &>/dev/null; then
+    $SUDO apt-get update -qq || true
+    $SUDO apt-get install -y python3-venv || echo "apt-get install python3-venv failed; continuing"
 fi
 
 VENV_DIR="$REPO_ROOT/.venv-vision-service"

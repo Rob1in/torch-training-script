@@ -18,7 +18,7 @@
     "setup": "make -C src/onnx_vision_service setup",
     "build": "make -C src/onnx_vision_service dist/archive.tar.gz",
     "path": "dist/archive.tar.gz",
-    "arch": ["linux/amd64", "linux/arm64", "darwin/arm64"]
+    "arch": ["linux/amd64", "linux/arm64", "darwin/arm64", "windows/amd64"]
   },
   "entrypoint": "onnx-vision-service"
 }

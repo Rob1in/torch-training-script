@@ -63,7 +63,13 @@ sweep = [
 # ONNX Vision Service module (lightweight, no PyTorch)
 vision-service = [
     "viam-sdk>=0.80.0",
-    "onnxruntime>=1.16.0",
+    # onnxruntime-openvino is a drop-in onnxruntime build that adds the
+    # OpenVINOExecutionProvider (Intel CPU/iGPU/NPU). Linux wheels bundle the
+    # OpenVINO runtime; Windows wheels need the openvino package next to them.
+    # No macOS wheel exists, so the Mac keeps plain onnxruntime.
+    "onnxruntime-openvino>=1.24.1; sys_platform != 'darwin'",
+    "openvino>=2025.4,<2026; sys_platform == 'win32'",
+    "onnxruntime>=1.16.0; sys_platform == 'darwin'",
     "numpy>=1.21.0",
     "pillow>=9.0.0",
     "opencv-python-headless>=4.8.0",

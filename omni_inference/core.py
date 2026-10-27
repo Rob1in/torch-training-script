@@ -25,7 +25,7 @@ Expected ONNX model contract (from convert_to_onnx.py):
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Union
+from typing import Any, List, Optional, Union
 
 import cv2
 import numpy as np
@@ -69,11 +69,18 @@ class OmniOnnxInference:
         labels: List[str],
         min_confidence: float = 0.0,
         background_strip_dist: float = 0.0,
+        providers: Optional[List[Any]] = None,
     ):
         """Create an inference session.
 
         Args:
             model_path: Path to the ``model.onnx`` file.
+            providers: onnxruntime execution providers, in priority order, as
+                accepted by ``ort.InferenceSession`` (names or
+                ``(name, options)`` tuples). Defaults to CPU only. Use
+                ``[("OpenVINOExecutionProvider", {"device_type": "CPU"}),
+                "CPUExecutionProvider"]`` with the ``onnxruntime-openvino``
+                package to run through OpenVINO.
             labels: Ordered class labels (0-indexed; no background entry).
             min_confidence: Minimum confidence to keep a detection.
             background_strip_dist: If > 0, strip the k-means background within
@@ -83,9 +90,12 @@ class OmniOnnxInference:
         self.min_confidence: float = min_confidence
         self.background_strip_dist: float = background_strip_dist
 
-        self.session = ort.InferenceSession(
-            model_path, providers=["CPUExecutionProvider"]
-        )
+        if providers is None:
+            providers = ["CPUExecutionProvider"]
+        self.session = ort.InferenceSession(model_path, providers=providers)
+        # What onnxruntime actually picked (a requested provider that is not
+        # installed is silently skipped, so callers should log this).
+        self.active_providers: List[str] = list(self.session.get_providers())
 
         # Extract input shape [batch, channels, height, width] from metadata.
         input_shape = self.session.get_inputs()[0].shape  # e.g. [1, 3, 480, 640]
